@@ -1,0 +1,5 @@
+# Preserve release bytes and exact-match synthetic fixtures across clones.
+* -text whitespace=cr-at-eol
+*.pbix binary
+*.zip binary
+*.png binary

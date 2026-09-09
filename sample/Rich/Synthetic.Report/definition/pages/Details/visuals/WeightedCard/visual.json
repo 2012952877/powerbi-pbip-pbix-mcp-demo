@@ -1,0 +1,38 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.0.0/schema.json",
+  "name": "WeightedCard",
+  "position": {
+    "x": 790,
+    "y": 80,
+    "z": 0,
+    "width": 390,
+    "height": 230,
+    "tabOrder": 0
+  },
+  "visual": {
+    "visualType": "card",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Sales"
+                    }
+                  },
+                  "Property": "\u52a0\u6743 \u91d1\u989d"
+                }
+              },
+              "queryRef": "Sales.\u52a0\u6743 \u91d1\u989d",
+              "nativeQueryRef": "\u52a0\u6743 \u91d1\u989d"
+            }
+          ]
+        }
+      }
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

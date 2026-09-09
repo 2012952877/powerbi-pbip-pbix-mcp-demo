@@ -1,0 +1,22 @@
+{
+  "converter": "power-bi-desktop-ui",
+  "direction": "pbix_to_pbip",
+  "export_mode": "definitions",
+  "source_sha256": "861aedcdc71ea34e2b4f80f0a4eede8ebc0a05e6f57d002e49f9c839c495cd3d",
+  "contains_data": false,
+  "requires_data_reload": true,
+  "reopened_in_fresh_desktop": true,
+  "pages": [
+    "Synthetic overview"
+  ],
+  "visual_count": 1,
+  "original_pbix_preserved": true,
+  "synthetic_fixture": true,
+  "data_refresh_policy": "never",
+  "data_values_verified": false,
+  "connection_information_redacted": false,
+  "desktop_version": "2.157.1354.0",
+  "synthetic_total_amount": null,
+  "verification_method": "Fresh owned Desktop opens definitions without refresh; no offline data/value success claimed.",
+  "additional_fixture_observations": []
+}

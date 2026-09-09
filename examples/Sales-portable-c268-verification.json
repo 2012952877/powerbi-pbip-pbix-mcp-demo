@@ -1,0 +1,28 @@
+{
+  "converter": "power-bi-desktop-ui",
+  "direction": "pbix_to_pbip",
+  "export_mode": "portable",
+  "source_sha256": "861aedcdc71ea34e2b4f80f0a4eede8ebc0a05e6f57d002e49f9c839c495cd3d",
+  "contains_data": true,
+  "requires_data_reload": false,
+  "reopened_in_fresh_desktop": true,
+  "pages": [
+    "Synthetic overview"
+  ],
+  "visual_count": 1,
+  "original_pbix_preserved": true,
+  "synthetic_fixture": true,
+  "data_refresh_policy": "never",
+  "data_values_verified": true,
+  "connection_information_redacted": false,
+  "desktop_version": "2.157.1354.0",
+  "synthetic_total_amount": 60,
+  "model_tables": [
+    "Sales"
+  ],
+  "model_measures": [
+    "Total Amount"
+  ],
+  "verification_method": "Desktop Save As; binary DataModel/report inspection; fresh-process UIA report-page and field observations. Sales/Total Amount field names and card Total Amount=60 observed via uia_accessible_name. DAX expression and individual rows were not queried.",
+  "additional_fixture_observations": []
+}

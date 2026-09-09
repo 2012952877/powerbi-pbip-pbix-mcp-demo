@@ -1,0 +1,30 @@
+table Sales
+	lineageTag: 98e66bd7-0a76-4919-8bc6-12e10a740004
+
+	measure 'Total Amount' = SUM(Sales[Amount])
+		formatString: 0
+		lineageTag: b360e064-f985-4453-a5e4-feb55fa62816
+
+	column Category
+		dataType: string
+		lineageTag: a45faee0-5f29-4baf-8aaf-04f38ef2d88e
+		summarizeBy: none
+		sourceColumn: Category
+
+	column Amount
+		dataType: int64
+		formatString: 0
+		lineageTag: ab11c181-6a3c-4b20-9e39-986cb12ee37a
+		summarizeBy: sum
+		sourceColumn: Amount
+
+	partition Sales = m
+		mode: import
+		source =
+				#table(type table [Category = text, Amount = Int64.Type], {{"A", 10}, {"B", 20}, {"C", 30}})
+
+	annotation PBI_ResultType = Table
+
+	measure '加权 金额' = SUMX(Sales, Sales[Amount] * RELATED('产品 维度'[权重]))
+		formatString: 0
+		lineageTag: c8bcc4e4-2306-4695-9c28-615901381517

@@ -1,0 +1,18 @@
+table '产品 维度'
+	lineageTag: 9e6b1291-4fa8-40a9-abbb-80a9c6d56c75
+
+	column Category
+		dataType: string
+		isKey
+		summarizeBy: none
+		sourceColumn: Category
+
+	column '权重'
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: 权重
+
+	partition '产品 维度' = m
+		mode: import
+		source =
+				#table(type table [Category = text, 权重 = Int64.Type], {{"A", 2}, {"B", 3}, {"C", 4}})

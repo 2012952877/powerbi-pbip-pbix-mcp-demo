@@ -1,0 +1,11 @@
+{
+  "name": "pbip-public-pilot-gateway",
+  "version": "0.2.2",
+  "private": true,
+  "description": "Streaming HTTPS edge for the authenticated private Power BI pilot",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test server.test.js"
+  }
+}

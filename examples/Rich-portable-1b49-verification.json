@@ -1,0 +1,46 @@
+{
+  "converter": "power-bi-desktop-ui",
+  "direction": "pbix_to_pbip",
+  "export_mode": "portable",
+  "source_sha256": "63782542e7da8063a4dfc1b0878a3b3172026cc5dfdc78f0581bc3429e3c5552",
+  "contains_data": true,
+  "requires_data_reload": false,
+  "reopened_in_fresh_desktop": true,
+  "pages": [
+    "概览 总览 Ω",
+    "明细 分析"
+  ],
+  "visual_count": 5,
+  "original_pbix_preserved": true,
+  "synthetic_fixture": true,
+  "data_refresh_policy": "never",
+  "data_values_verified": true,
+  "connection_information_redacted": false,
+  "desktop_version": "2.157.1354.0",
+  "synthetic_total_amount": 60,
+  "model_tables": [
+    "Sales"
+  ],
+  "model_measures": [
+    "Total Amount"
+  ],
+  "verification_method": "Desktop Save As; binary DataModel/report inspection; fresh-process UIA report-page and field observations. Sales/Total Amount field names and card Total Amount=60 observed via uia_accessible_name. DAX expression and individual rows were not queried.",
+  "additional_fixture_observations": [
+    {
+      "page": "概览 总览 Ω",
+      "measure": "加权 金额",
+      "expected": 200,
+      "observed": 200,
+      "source": "uia_accessible_name",
+      "expectation_method": "Independent sum of input amount times dimension weight."
+    },
+    {
+      "page": "明细 分析",
+      "measure": "加权 金额",
+      "expected": 200,
+      "observed": 200,
+      "source": "uia_accessible_name",
+      "expectation_method": "Independent sum of input amount times dimension weight."
+    }
+  ]
+}

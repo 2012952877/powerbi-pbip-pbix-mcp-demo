@@ -1,0 +1,3 @@
+relationship 77e2d177-9d70-43fb-ab63-d1b5a7b6aada
+	fromColumn: Sales.Category
+	toColumn: '产品 维度'.Category
