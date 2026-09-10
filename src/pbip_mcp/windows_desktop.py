@@ -2000,26 +2000,38 @@ class _Automation:
         self.owned.require_live()
         self.owned.api.post_close(self.owned.job, self.main_handle)
         until = min(self.deadline.end, time.monotonic() + 25.0)
-        discarded_root: int | None = None
+        discarded_roots: set[int] = set()
+        discard_limit = 2 if definitions_only else 1
         while not self.owned.api.exited(self.owned.process):
             snapshot = self.snapshot("owned Desktop close", require_live=False)
             prompts = _check_problems(snapshot, allow_discard=allow_discard, allow_unprocessed_visuals=definitions_only)
             if prompts:
-                if len(prompts) != 1 or (discarded_root is not None and prompts[0].root != discarded_root):
+                if len(prompts) != 1:
                     raise DemoError("DESKTOP_UNEXPECTED_SAVE_PROMPT", "Desktop repeated a save decision while closing.")
-                if discarded_root is None:
-                    discard = self.find(
-                        snapshot, ("Don't save", "Do not save", "Discard changes"),
-                        ("Button",), within=prompts[0],
-                    )
-                    if discard is None:
-                        raise DemoError("DESKTOP_CLOSE_FAILED", "The owned save-changes dialog lacks a supported discard control.")
+                prompt = prompts[0]
+                self.owned.require_pid(prompt.pid)
+                discard = self.find(
+                    snapshot, ("Don't save", "Do not save", "Discard changes"),
+                    ("Button",), within=prompt,
+                )
+                if discard is None:
+                    raise DemoError("DESKTOP_CLOSE_FAILED", "The owned save-changes dialog lacks a supported discard control.")
+                if prompt.root not in discarded_roots:
+                    if len(discarded_roots) >= discard_limit:
+                        raise DemoError("DESKTOP_UNEXPECTED_SAVE_PROMPT", "Desktop repeated a save decision while closing.")
                     self.activate(discard)
-                    discarded_root = prompts[0].root
+                    discarded_roots.add(prompt.root)
+                    self.evidence.record("owned-close-discard", {
+                        "pid": self.owned.pid, "discard_count": len(discarded_roots),
+                        "discard_limit": discard_limit,
+                    })
             if time.monotonic() >= until:
                 self.deadline.check("owned Desktop close")
                 raise DemoError("DESKTOP_CLOSE_FAILED", "Owned Desktop did not close gracefully within the deadline.")
             self.deadline.pause("owned Desktop close")
+        self.evidence.record("owned-close-completed", {
+            "pid": self.owned.pid, "discard_count": len(discarded_roots),
+        })
 
 
 def _require_new_output(path: Path) -> None:

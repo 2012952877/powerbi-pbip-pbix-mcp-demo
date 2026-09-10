@@ -11,8 +11,10 @@ from pbip_mcp.archive import ValidatedArchive
 from pbip_mcp.config import Config, Limits
 from pbip_mcp.errors import DemoError
 from pbip_mcp.storage import JobStore
+from pbip_mcp.synthetic import fixture_files
+from pbip_mcp.fixture_variants import rich_fixture_files
 
-from .helpers import archive_bytes
+from .helpers import archive_bytes, non_fixture_files
 
 
 class StoreTests(unittest.TestCase):
@@ -35,6 +37,63 @@ class StoreTests(unittest.TestCase):
         self.assertTrue((directory / "original" / "Synthetic.pbip").is_file())
         self.assertNotIn(str(directory), str(job))
         self.assertFalse(self.store.worker_status()["ready"])
+
+    def test_cache_preflight_rejects_missing_empty_directory_and_wrong_model_before_job_creation(self):
+        candidates = [non_fixture_files(), non_fixture_files(b"")]
+        directory_cache = non_fixture_files()
+        directory_cache["Synthetic.SemanticModel/.pbi/cache.abf/"] = b"not a regular cache"
+        candidates.append(directory_cache)
+        wrong_model = non_fixture_files()
+        wrong_model["Unreferenced.SemanticModel/.pbi/cache.abf"] = b"UNIT cache, wrong model"
+        candidates.append(wrong_model)
+        for files in candidates:
+            with self.subTest(members=list(files)[-1]):
+                archive = ValidatedArchive(archive_bytes(files))
+                self.assertFalse(archive.project.synthetic_fixture)
+                with self.assertRaises(DemoError) as caught:
+                    self.store.submit(archive)
+                self.assertEqual(caught.exception.code, "DATA_CACHE_REQUIRED")
+                with self.store._connect() as db:
+                    self.assertEqual(db.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)
+                self.assertEqual(list(self.config.jobs_dir.iterdir()), [])
+
+    def test_cache_preflight_allows_only_exact_bundled_fixtures_without_cache(self):
+        for files in (fixture_files(), rich_fixture_files()):
+            with self.subTest(pointer=next(iter(files))):
+                archive = ValidatedArchive(archive_bytes(files))
+                self.assertTrue(archive.project.synthetic_fixture)
+                self.assertFalse(archive.has_data_cache)
+                job = self.store.submit(archive)
+                self.assertEqual(job["status"], "queued")
+                self.store.cancel(job["job_id"])
+        files = fixture_files()
+        files["untrusted-extra.txt"] = b"An extra file invalidates exact fixture identity."
+        with self.assertRaises(DemoError) as caught:
+            self.store.submit(ValidatedArchive(archive_bytes(files)))
+        self.assertEqual(caught.exception.code, "DATA_CACHE_REQUIRED")
+
+    def test_cache_preflight_accepts_nonempty_referenced_cache_case_insensitively(self):
+        files = non_fixture_files(b"UNIT nonempty cache; not a real model")
+        cache = files.pop("Synthetic.SemanticModel/.pbi/cache.abf")
+        files["Synthetic.SemanticModel/.PBI/CACHE.ABF"] = cache
+        archive = ValidatedArchive(archive_bytes(files))
+        self.assertTrue(archive.has_data_cache)
+        self.assertFalse(archive.project.synthetic_fixture)
+        job = self.store.submit(archive)
+        self.assertEqual(job["status"], "queued")
+        with self.store._connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM jobs").fetchone()[0], 1)
+
+    def test_rejected_cache_preflight_never_expires_or_modifies_old_jobs(self):
+        job = self.store.submit(self.archive)
+        with self.store._connect() as db:
+            db.execute("UPDATE jobs SET expires=0 WHERE id=?", (job["job_id"],))
+            before = [tuple(row) for row in db.execute("SELECT * FROM jobs")]
+        with self.assertRaises(DemoError) as caught:
+            self.store.submit(ValidatedArchive(archive_bytes(non_fixture_files())))
+        self.assertEqual(caught.exception.code, "DATA_CACHE_REQUIRED")
+        with self.store._connect() as db:
+            self.assertEqual([tuple(row) for row in db.execute("SELECT * FROM jobs")], before)
 
     def test_hash_error_and_bad_job_id(self):
         with self.assertRaises(DemoError) as caught:

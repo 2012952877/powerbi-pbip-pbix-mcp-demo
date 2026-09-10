@@ -19,7 +19,7 @@ from pbip_mcp.errors import DemoError
 from pbip_mcp.server import create_server
 from pbip_mcp.storage import JobStore
 
-from .helpers import archive_bytes
+from .helpers import archive_bytes, non_fixture_files
 from .test_portal import configure_auth
 from .test_bidirectional import input_pbix
 
@@ -73,6 +73,27 @@ class MCPProtocolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await call(client, "get_job", {"job_id": queued["job"]["job_id"]}))["job"]["source"], queued["job"]["source"])
             await call(client, "cancel_job", {"job_id": queued["job"]["job_id"]})
         self.assertEqual(JobStore(self.config).get(queued["job"]["job_id"])["status"], "cancelled")
+
+    async def test_sdk_and_stdio_cache_preflight_is_a_typed_error_without_new_jobs(self):
+        store = JobStore(self.config)
+        for name, connection in (("sdk", self.server), ("stdio", transport(self.config.data_dir, None))):
+            async with Client(connection, read_timeout_seconds=20, cache=None) as client:
+                for cache in (None, b""):
+                    with self.subTest(transport=name, cache=cache):
+                        before = len(store.list_jobs())
+                        result = await client.call_tool("submit_project", {
+                            "archive_base64": base64.b64encode(archive_bytes(non_fixture_files(cache))).decode(),
+                        })
+                        self.assertTrue(result.is_error)
+                        self.assertFalse(result.structured_content["ok"])
+                        self.assertEqual(result.structured_content["error"]["code"], "DATA_CACHE_REQUIRED")
+                        self.assertNotIn("job", result.structured_content)
+                        self.assertEqual(len(store.list_jobs()), before)
+                queued = await call(client, "submit_project", {
+                    "archive_base64": base64.b64encode(archive_bytes(non_fixture_files(b"UNIT cache"))).decode(),
+                })
+                self.assertEqual(queued["job"]["status"], "queued")
+                await call(client, "cancel_job", {"job_id": queued["job"]["job_id"]})
 
     async def test_real_loopback_http_transport(self):
         with socket.socket() as reservation:

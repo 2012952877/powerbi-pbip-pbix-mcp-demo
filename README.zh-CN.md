@@ -4,7 +4,7 @@
 
 微软明确说明目前没有官方 PBIP/PBIX 程序化转换 API，支持的转换操作是 Desktop 的 Save As。本项目自动操作这个桌面流程，**不是微软官方无头转换 API**，也不使用 pbi-tools、PBIT、重命名 ZIP 或在线报表替代输出。[1]
 
-公开源码基于 rc6 / **0.2.3**。本文侧重实现、接口和运行参数；
+公开源码基于 rc7 / **0.2.4**。本文侧重实现、接口和运行参数；
 完整阅读入口为[中文文档首页](docs/README.md)，当前合成双向结果见[示例索引](examples/README.md)。
 原部署流水、内部任务 ID、进程编号、会话路径和历史发布包不随公开仓库提供。
 原文的早期正向限制不能覆盖当前已实现的双向/公网功能；以这里的模式与认证契约为准。
@@ -30,11 +30,13 @@ C:\PBIPMCP\app\scripts\start-portal.ps1 -Root C:\PBIPMCP -AuthConfig C:\PBIPMCP\
 
 | 转换 | 输入与产物 | 数据语义 |
 |---|---|---|
-| PBIP→PBIX | 完整 ZIP/文件夹；`kind=pbix` | 非内置项目必须自带 `.pbi/cache.abf`，否则明确 `DATA_CACHE_REQUIRED`；不自动刷新任意查询 |
+| PBIP→PBIX | 完整 ZIP/文件夹；`kind=pbix` | 非内置项目必须在所引用模型目录自带非空 `.pbi/cache.abf`，否则在创建任务、入队和保留文件前返回 `DATA_CACHE_REQUIRED`；不自动刷新任意查询 |
 | PBIX→PBIP，默认 definitions | `kind=pbip`，文件为 `report.pbip.zip` | 保留定义/资源，剔除缓存与本机设置；`contains_data=false`、`requires_data_reload=true`，可能需要人工加载数据 |
 | PBIX→PBIP，portable | 同样返回 PBIP ZIP | 仅保留本任务 Desktop 导出的非空缓存，缺缓存失败；新进程打开导出的缓存副本，无自动刷新 |
 
 反向不是改扩展名：先校验有本地二进制模型的 PBIX 容器，真实 Desktop 打开、另存完整 PBIP、白名单打包、独立副本新 PID 复开，再交付。未知/加密/损坏容器受控拒绝；PBIP 不支持敏感度标签，遇 Desktop 限制失败，绝不移除标签或自动确认登录/法律/安全提示。`SecurityBindings` 本身不是标签证据，普通未标签 PBIX 也可能含此条目。
+
+rc7 只为 definitions 的复开关闭阶段允许最多两个不同的、已识别且属于当前任务进程的保存决定窗口；每个窗口仅响应一次已启用的 `Don't save` / `Do not save` / `Discard changes` 控件，仍受 25 秒关闭期限与整个转换期限约束。普通关闭路径仍最多一次，第三个或未知提示明确失败；这不是任意弹窗自动点击，也不会刷新或给 definitions 声称离线数据成功。
 
 白名单只允许当前 pointer 引用的单个 report/model 定义、指定静态资源及可选 `cache.abf`、`.gitignore`，不交付 localSettings、CLIXML、运行身份、私钥、令牌或其他任务目录。**不含数据缓存并不等于脱敏：M 查询、TMDL 等定义自身仍可能包含内嵌数据、敏感文本或连接信息，均不会自动移除**；内置 Sales 样例也在定义中包含数据。portable 缓存是数据，应按原始 PBIX 的敏感级别管理。每个任务独立目录与 Desktop 进程，临时 work/export/reopen 副本在正常完成/失败后清理；中断遗留由受控留存维护处理。旧失败不会被改为成功，重试必须新建任务。
 
@@ -283,15 +285,15 @@ python -m venv .venv
 `validate_sample.py` 只向微软公开 schema 仓库读取 JSON Schema，不上传项目；它校验八个 JSON 定义，TMDL 与实际 Desktop 支持仍由真实打开确认。单元测试不会启动本机 Desktop，也不会接触宿主 UI。协议测试使用官方 SDK 的进程内、真实 stdio 及 loopback HTTP 传输；假 PBIX 都明确标为 unit-only。
 
 发布源码见当前仓库；不附修复前版本或历史发布包。
-打包器会生成精确内置样例，其 ZIP 元数据可能改变压缩包摘要，逐文件匹配与卡片值要求不变。
+rc7 打包器固定 ZIP 时间戳、成员顺序与文件属性，相同输入可重复生成相同字节；同时生成逐成员 SHA-256 manifest，逐文件匹配与卡片值要求不变。
 
-需要再次打包时选择新的桌面文件名：
+需要构建新发布版本时选择尚不存在的输出路径，不覆盖已固定的发布包：
 
 ```powershell
 .\scripts\build-package.ps1 -OutputZip ('C:\Work\powerbi-pbip-pbix-mcp-demo-' + (Get-Date -Format yyyyMMdd-HHmmss) + '.zip')
 ```
 
-打包器按白名单收集源码、脚本、测试、依赖锁、说明及完整合成 PBIP/ZIP；不包含 venv、缓存、运行数据、令牌、SSH 密钥或私有诊断。已有包名则报错，不覆盖。打包和源文件都不自动上传 GitHub。
+打包器按白名单收集源码、脚本、测试、依赖锁、说明及完整合成 PBIP/ZIP；不包含 venv、缓存、运行数据、令牌、SSH 密钥或私有诊断。包或 manifest 路径已存在均报错，不覆盖；`-Manifest` 可显式指定 manifest 路径。打包和源文件都不自动上传 GitHub。
 
 ## 8. 可重复运行与扩展验证
 
@@ -306,16 +308,15 @@ $Manage = 'C:\PBIPMCP\app\scripts\manage-worker.ps1'
 & $Manage -Action Doctor
 & $Manage -Action Start
 & $Manage -Action Status
-& $Manage -Action Stop -WaitSeconds 30
 ```
 
 `Start` 在任务不存在时创建 **Interactive + Limited** 任务，存在时核对专用账号 SID、执行程序、脚本、工作目录和有界参数；不覆盖不匹配的同名任务。已经运行且心跳正常时返回 `already_running=true`，不会重复启动 worker。`Stop` 只请求这个 worker 在当前转换结束后退出，队列原件保留；30 秒还未退出会明确报告“停止仍在等待”，不是强杀当前转换。需要等待完整转换结束时可将 `WaitSeconds` 增大到 700。已停止的任务再次 Stop 返回 `already_stopped=true`。
 
 `Doctor` 检查 Python、Desktop、UIA/原生控件依赖、磁盘和 worker 心跳，不启动 Desktop。**Doctor 的环境检查通过，不等于 worker 已就绪。** 从 SSH 调用时 `caller_session` 显示 Session 0 是正常诊断结果；转换可用性要看独立的 `worker.ready`。本机外部控制与 worker 仍然分处不同会话。
 
-worker 默认处理多次任务，空闲 **30 分钟**退出，计划任务最长 **2 小时**。这些只是工作进程期限，不会自动启动 VM、延长云计费窗口、解锁 Windows 或配置自动登录。RDP/浏览器崩溃、断连和锁定时，worker 会失败或退出；恢复 RDP 后显式 Start，再用新的任务 ID 重试，旧失败任务不会自动变成成功。
+新注册任务仍默认空闲 **30 分钟**退出，有限空闲模式的计划任务最长 **2 小时**。本次 rc7 部署已显式配置 `IdleTimeout=0`，对应计划任务 `ExecutionTimeLimit=PT0S`，不再受这两项退出期限影响；单次转换仍有 600 秒上限。无限空闲不是自动登录、解锁、守护或可用性承诺，RDP 仍需 Active 且未锁定。断连或锁定后先恢复桌面，再显式 Start；旧失败任务不会自动变成成功。
 
-本轮为了截图，已注册任务使用 `ReviewSeconds=20`：每个已验证的富样例页面停留 20 秒，仍受总超时监督。正常新注册任务默认 0；Start/Status/Doctor 会保留并显示既有任务的配置，不偷偷修改。若显式传入不同的 `-ReviewSeconds`，Start/Register 拒绝覆盖，须停下并检查后重新注册。截图停留不是人工代替转换或代替验收。
+已注册任务保留 `ReviewSeconds=20`：每个已验证的富样例页面停留 20 秒，仍受总超时监督。正常新注册任务默认 0；Start/Status 保留并显示既有 Review/Idle 参数，不偷偷修改。显式修改配置须先安全 Stop，确认任务 Ready、没有运行中的队列任务且 worker 不为 ready，再执行 `Configure -IdleTimeout 0`；不传 `ReviewSeconds` 就保留原值。日常 Start 不需要重复 Configure；停机流程见[运行手册](docs/02-日常复跑与运维.md)。
 
 在 **本机 PowerShell**，先按[运行手册第 6 节](docs/02-日常复跑与运维.md)建立隧道，再通过窄化 SSH 入口运行相同操作。下面示例统一使用 **50027**；改用其他空闲端口时同时更新隧道与客户端：
 
@@ -332,10 +333,9 @@ $Connection = @{
 .\scripts\remote-worker.ps1 @Connection -Action Doctor
 .\scripts\remote-worker.ps1 @Connection -Action Start
 .\scripts\remote-worker.ps1 @Connection -Action Status
-.\scripts\remote-worker.ps1 @Connection -Action Stop -WaitSeconds 30
 ```
 
-该外部管理脚本只允许 Register/Start/Stop/Status/Doctor，使用固定的 `C:\PBIPMCP\app` 入口，不提供远端任意命令选项。SSH 仍是专用密钥认证、严格主机指纹检查和 loopback 端口。当前密钥没有搬迁、轮换或进入源码包；持续部署应由管理员在 ACL 限定的用户配置/凭据位置提供新身份，并把路径传给脚本，而不是把会话临时身份包装成长期共享凭据。
+该外部管理脚本只允许 Register/Configure/Start/Stop/Status/Doctor，使用固定的 `C:\PBIPMCP\app` 入口，不提供远端任意命令选项。SSH 仍是专用密钥认证、严格主机指纹检查和 loopback 端口。当前密钥没有搬迁、轮换或进入源码包；持续部署应由管理员在 ACL 限定的用户配置/凭据位置提供新身份，并把路径传给脚本，而不是把会话临时身份包装成长期共享凭据。
 
 ### 8.2 富样例与小批量提交
 

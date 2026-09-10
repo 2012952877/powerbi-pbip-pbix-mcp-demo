@@ -127,6 +127,19 @@ class ValidatedArchive:
             raise DemoError("INCOMPLETE_PROJECT", "The ZIP is missing a required project definition file.")
         return info
 
+    @property
+    def has_data_cache(self) -> bool:
+        cache = self.members.get(_key(self.project.model + "/.pbi/cache.abf"))
+        return cache is not None and not cache.is_dir() and cache.file_size > 0
+
+    def require_data_cache(self) -> None:
+        if not self.project.synthetic_fixture and not self.has_data_cache:
+            raise DemoError(
+                "DATA_CACHE_REQUIRED",
+                "This non-bundled PBIP has no nonempty data cache. Load data manually in Desktop "
+                "and include the local model's .pbi/cache.abf; arbitrary queries are never refreshed automatically.",
+            )
+
     def _json(self, archive: zipfile.ZipFile, name: str) -> dict[str, Any]:
         info = self._file(name)
         if info.file_size > self.limits.metadata_bytes:

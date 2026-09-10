@@ -117,12 +117,11 @@ class Worker:
         work = directory / "work"
         output = directory / "output"
         evidence = directory / "evidence"
-        from .archive import ValidatedArchive, _key
+        from .archive import ValidatedArchive
         from .project_export import filter_archive
 
         source_archive = ValidatedArchive((directory / "source.zip").read_bytes(), self.config.limits)
-        cache = source_archive.members.get(_key(project.model + "/.pbi/cache.abf"))
-        has_cache = cache is not None and cache.file_size > 0
+        has_cache = source_archive.has_data_cache
         if not project.synthetic_fixture and not has_cache:
             raise DemoError("DATA_CACHE_REQUIRED", "This non-bundled PBIP has no data cache. Load data manually in Desktop; arbitrary queries are never refreshed automatically.")
         sanitized = filter_archive(source_archive, "portable" if has_cache else "definitions", self.config.limits)
@@ -301,6 +300,8 @@ class Worker:
                     LOG.exception("Task %s temporary cleanup requires operator attention", claim["job_id"])
 
     def run(self, *, max_jobs: int = 0, idle_timeout: int = 0) -> int:
+        if idle_timeout != 0 and not 60 <= idle_timeout <= 7200:
+            raise DemoError("WORKER_IDLE_TIMEOUT", "idle-timeout must be 0 (no idle exit) or 60..7200 seconds.")
         with QueueLock(self.config.data_dir):
             recovered = self.store.recover_interrupted()
             if recovered:
@@ -342,12 +343,14 @@ def main() -> None:
     parser.add_argument("--desktop-exe", type=Path, required=True)
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--max-jobs", type=int, default=0)
-    parser.add_argument("--idle-timeout", type=int, default=0)
+    parser.add_argument("--idle-timeout", type=int, default=0, help="0 disables idle exit; otherwise 60..7200 seconds.")
     parser.add_argument("--review-seconds", type=int, default=0)
     parser.add_argument("--limits-config", type=Path)
     args = parser.parse_args()
-    if args.max_jobs < 0 or args.idle_timeout < 0:
-        parser.error("max-jobs and idle-timeout cannot be negative")
+    if args.max_jobs < 0:
+        parser.error("max-jobs cannot be negative")
+    if args.idle_timeout != 0 and not 60 <= args.idle_timeout <= 7200:
+        parser.error("idle-timeout must be 0 (no idle exit) or 60..7200 seconds")
     if not 0 <= args.review_seconds <= 60:
         parser.error("review-seconds must be 0..60")
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(message)s")

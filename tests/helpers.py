@@ -19,6 +19,15 @@ def change_json(files: dict[str, bytes], name: str, transform) -> None:
     files[name] = json.dumps(document).encode("utf-8")
 
 
+def non_fixture_files(cache: bytes | None = None) -> dict[str, bytes]:
+    files = fixture_files()
+    table = "Synthetic.SemanticModel/definition/tables/Sales.tmdl"
+    files[table] = files[table].replace(b'{"A", 10}', b'{"A", 999}')
+    if cache is not None:
+        files["Synthetic.SemanticModel/.pbi/cache.abf"] = cache
+    return files
+
+
 def fake_pbix(pages: list[str] | None = None, *, model: bool = True, visuals: int = 1) -> bytes:
     """Unit-only structural container. It is explicitly NOT a converted Power BI report."""
     files = {

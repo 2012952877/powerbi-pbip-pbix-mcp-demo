@@ -1,13 +1,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)]
-    [ValidateSet('Register','Start','Stop','Status','Doctor')][string]$Action,
+    [ValidateSet('Register','Configure','Start','Stop','Status','Doctor')][string]$Action,
     [Parameter(Mandatory=$true)][string]$Identity,
     [Parameter(Mandatory=$true)][string]$KnownHosts,
     [Parameter(Mandatory=$true)][ValidatePattern('^[A-Za-z0-9.:-]+$')][string]$HostKeyAlias,
     [ValidateRange(1,65535)][int]$Port = 50022,
     [ValidatePattern('^[A-Za-z0-9_.-]+@(127\.0\.0\.1|localhost)$')][string]$Target = 'pbipdemo@127.0.0.1',
     [ValidateRange(0,60)][int]$ReviewSeconds = 0,
+    [ValidateScript({ $_ -eq 0 -or ($_ -ge 60 -and $_ -le 7200) })][int]$IdleTimeout = 1800,
     [ValidateRange(1,700)][int]$WaitSeconds = 30
 )
 $ErrorActionPreference='Stop'
@@ -16,7 +17,9 @@ if (-not (Test-Path -LiteralPath $Identity -PathType Leaf) -or -not (Test-Path -
 }
 $ReviewArgument = ''
 if ($PSBoundParameters.ContainsKey('ReviewSeconds')) { $ReviewArgument = " -ReviewSeconds $ReviewSeconds" }
-$Remote = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; & 'C:\PBIPMCP\app\scripts\manage-worker.ps1' -Action $Action$ReviewArgument -WaitSeconds $WaitSeconds"
+$IdleArgument = ''
+if ($PSBoundParameters.ContainsKey('IdleTimeout')) { $IdleArgument = " -IdleTimeout $IdleTimeout" }
+$Remote = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; & 'C:\PBIPMCP\app\scripts\manage-worker.ps1' -Action $Action$ReviewArgument$IdleArgument -WaitSeconds $WaitSeconds"
 $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Remote))
 $Options = @(
     '-T', '-p', [string]$Port, '-i', [IO.Path]::GetFullPath($Identity),

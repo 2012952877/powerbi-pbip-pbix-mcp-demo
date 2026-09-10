@@ -241,7 +241,20 @@ class BidirectionalTests(unittest.TestCase):
         name = "Synthetic.SemanticModel/definition/tables/Sales.tmdl"
         files[name] = files[name].replace(b'{"A", 10}', b'{"A", 999}')
         worker = Worker(self.store.config, self.root / "not-launched.exe")
-        job = self.store.submit(ValidatedArchive(archive_bytes(files)))
+        with self.assertRaises(DemoError) as error:
+            self.store.submit(ValidatedArchive(archive_bytes(files)))
+        self.assertEqual(error.exception.code, "DATA_CACHE_REQUIRED")
+        self.assertEqual(self.store.list_jobs(), [])
+        # Model an already-queued rc6 input without bypassing preflight for new submissions.
+        original = ValidatedArchive(archive_bytes())
+        job = self.store.submit(original)
+        directory = self.store.job_dir(job["job_id"])
+        legacy_data = archive_bytes(files)
+        (directory / "source.zip").write_bytes(legacy_data)
+        legacy_project = ValidatedArchive(legacy_data).project
+        with self.store._connect() as db:
+            db.execute("UPDATE jobs SET source_sha256=?,project_json=? WHERE id=?",
+                       (hashlib.sha256(legacy_data).hexdigest(), json.dumps(legacy_project.as_dict()), job["job_id"]))
         with patch.object(worker, "_supervise") as supervise:
             worker.execute(self.store.claim())
         supervise.assert_not_called()

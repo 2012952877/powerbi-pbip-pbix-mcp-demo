@@ -19,7 +19,7 @@ from pbip_mcp.portal import create_portal
 from pbip_mcp.storage import JobStore
 from pbip_mcp.synthetic import fixture_files
 
-from .helpers import archive_bytes
+from .helpers import archive_bytes, non_fixture_files
 from .test_bidirectional import input_pbix
 
 
@@ -98,6 +98,36 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(job["export_mode"], "portable")
         files = [("project_files", ("folder/" + name, value)) for name, value in fixture_files().items()]
         response = self.client.post("/api/jobs", headers=headers, files=files, data={"direction": "auto"})
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(len(JobStore(self.config).list_jobs(principal=Principal("alice", "Alice"))), 2)
+
+    def test_zip_and_folder_cache_preflight_reject_without_creating_a_job(self):
+        headers = self.login()
+        store = JobStore(self.config)
+        for cache in (None, b""):
+            files = non_fixture_files(cache)
+            for form in ("zip", "folder"):
+                with self.subTest(cache=cache, form=form):
+                    if form == "zip":
+                        response = self.submit(headers, data=archive_bytes(files))
+                    else:
+                        response = self.client.post("/api/jobs", headers=headers,
+                            files=[("project_files", ("folder/" + name, data)) for name, data in files.items()],
+                            data={"direction": "pbip_to_pbix"})
+                    self.assertEqual(response.status_code, 400, response.text)
+                    self.assertEqual(response.json()["error"]["code"], "DATA_CACHE_REQUIRED")
+                    with store._connect() as db:
+                        self.assertEqual(db.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)
+                    self.assertEqual(list(self.config.jobs_dir.iterdir()), [])
+
+    def test_zip_and_folder_nonempty_cache_are_queued(self):
+        headers = self.login()
+        files = non_fixture_files(b"UNIT cache, never opened by Desktop")
+        response = self.submit(headers, data=archive_bytes(files))
+        self.assertEqual(response.status_code, 201, response.text)
+        response = self.client.post("/api/jobs", headers=headers,
+            files=[("project_files", ("folder/" + name, data)) for name, data in files.items()],
+            data={"direction": "pbip_to_pbix"})
         self.assertEqual(response.status_code, 201, response.text)
         self.assertEqual(len(JobStore(self.config).list_jobs(principal=Principal("alice", "Alice"))), 2)
 

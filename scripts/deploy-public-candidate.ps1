@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$Candidate,
     [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{64}$')][string]$ExpectedHash,
-    [ValidatePattern('^[a-z0-9-]+$')][string]$ReleaseName = 'bidirectional-rc6'
+    [ValidatePattern('^[a-z0-9-]+$')][string]$ReleaseName = 'bidirectional-rc7'
 )
 $ErrorActionPreference = 'Stop'
 $App = 'C:\PBIPMCP\app'
@@ -80,11 +80,11 @@ from pathlib import Path
 import pbip_mcp
 from pbip_mcp.config import Config
 from pbip_mcp.portal import create_portal
-assert pbip_mcp.__version__=='0.2.3'
+assert pbip_mcp.__version__=='0.2.4'
 assert Path(pbip_mcp.__file__).resolve()==Path(r'C:\PBIPMCP\app\.venv\Lib\site-packages\pbip_mcp\__init__.py')
 create_portal(Config(Path(r'C:\PBIPMCP\data')),Path(r'C:\PBIPMCP\pilot-auth-bidir\users.json'),
     origin='https://pbip-mcp-bidir-2d79425f.azurewebsites.net',allow_public_origin=True)
-print('Installed 0.2.3 public-origin construction verified without starting a listener or Desktop.')
+print('Installed 0.2.4 public-origin construction verified without starting a listener or Desktop.')
 '@ | & $Runtime -
 if ($LASTEXITCODE -ne 0) { throw 'Installed runtime validation failed.' }
 $Receipt = [ordered]@{
@@ -92,7 +92,7 @@ $Receipt = [ordered]@{
     package = (Split-Path -Leaf $Candidate)
     sha256 = $ExpectedHash
     source_installed_release_files_matched = $Sources.Count
-    version = '0.2.3'
+    version = '0.2.4'
     backup = $Backup
     backup_sha256 = (Get-FileHash -LiteralPath $Backup).Hash.ToLowerInvariant()
     queue_backup = $QueueBackup

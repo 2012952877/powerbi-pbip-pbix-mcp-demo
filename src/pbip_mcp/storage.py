@@ -204,6 +204,8 @@ class JobStore:
             or digest != expected_sha256.lower()
         ):
             raise DemoError("SOURCE_HASH_MISMATCH", "The submitted ZIP does not match sha256.")
+        if direction == "pbip_to_pbix":
+            archive.require_data_cache()
         job_id = uuid.uuid4().hex
         owner_dir = self.config.jobs_dir / "owned" / principal.storage_key
         reject_links(owner_dir)

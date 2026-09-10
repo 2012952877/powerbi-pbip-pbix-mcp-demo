@@ -3,7 +3,7 @@ param(
     [string]$Root = 'C:\PBIPMCP',
     [string]$DesktopExe = 'C:\Program Files\Microsoft Power BI Desktop\bin\PBIDesktop.exe',
     [ValidateRange(0, 60)][int]$ReviewSeconds = 0,
-    [ValidateRange(60, 7200)][int]$IdleTimeout = 1800
+    [ValidateScript({ $_ -eq 0 -or ($_ -ge 60 -and $_ -le 7200) })][int]$IdleTimeout = 1800
 )
 $ErrorActionPreference = 'Stop'
 if ([Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0 -or
