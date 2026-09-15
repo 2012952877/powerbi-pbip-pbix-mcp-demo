@@ -4,7 +4,7 @@ import re
 import zlib
 import binascii
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .archive import ValidatedArchive, _member_name
 from .config import Limits
@@ -14,6 +14,9 @@ from .pbix import inspect_container
 
 DIRECTIONS = ("pbip_to_pbix", "pbix_to_pbip")
 EXPORT_MODES = ("definitions", "portable")
+ARTIFACT_FILENAMES = {"pbix": "report.pbix", "pbip": "report.pbip.zip", "verification": "verification.json"}
+_ARTIFACT_SUFFIXES = {"pbix": ".pbix", "pbip": ".pbip.zip", "verification": ".verification.json"}
+_DOWNLOAD_NAME_LIMITS = Limits(path_characters=255, path_depth=1)
 _TRUSTED_BASELINE_HASHES = {
     "861aedcdc71ea34e2b4f80f0a4eede8ebc0a05e6f57d002e49f9c839c495cd3d",
     "f4b9ee628496897ea4ffba921100be8e2d4f431d08ce67cc025f9a9150c7bc79",
@@ -27,6 +30,41 @@ def safe_source_name(name: str) -> str:
     ):
         raise DemoError("INPUT_NAME", "Upload a file with a simple, bounded filename.")
     return name
+
+
+def artifact_filename(basename: str, kind: str) -> str:
+    if kind not in _ARTIFACT_SUFFIXES:
+        raise DemoError("INVALID_ARTIFACT", "Unknown artifact kind.")
+    if not isinstance(basename, str) or not basename:
+        raise DemoError("INPUT_NAME", "A nonempty name is required for downloaded files.")
+    filename = basename + _ARTIFACT_SUFFIXES[kind]
+    try:
+        _member_name(filename, _DOWNLOAD_NAME_LIMITS)
+        if len(filename.encode("utf-16-le")) // 2 > 255:
+            raise DemoError("INPUT_NAME", "The name is too long for a Windows download filename.")
+    except (DemoError, UnicodeEncodeError) as exc:
+        raise DemoError("INPUT_NAME", "Use a shorter name without unsafe characters or Windows-reserved names.") from exc
+    return filename
+
+
+def download_basename(source_name: str, *, is_folder: bool = False) -> str:
+    safe_source_name(source_name)
+    basename = source_name
+    if not is_folder:
+        for suffix in (".pbip.zip", ".pbix", ".zip"):
+            if basename.lower().endswith(suffix):
+                basename = basename[:-len(suffix)]
+                break
+    for kind in _ARTIFACT_SUFFIXES:
+        artifact_filename(basename, kind)
+    return basename
+
+
+def folder_source_name(paths: list[str], pointer: str) -> str:
+    parts = [PurePosixPath(path).parts for path in paths]
+    if parts and all(len(path) > 1 and path[0] == parts[0][0] for path in parts):
+        return safe_source_name(parts[0][0])
+    return safe_source_name(PurePosixPath(pointer).stem)
 
 
 def validate_direction(direction: str, export_mode: str | None) -> None:

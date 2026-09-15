@@ -44,7 +44,7 @@ def package_entries() -> dict[str, bytes]:
 
     for name in required:
         include(ROOT / name)
-    for folder, extensions in (("src", {".py"}), ("tests", {".py", ".ps1"}), ("scripts", {".py", ".ps1"})):
+    for folder, extensions in (("src", {".py"}), ("tests", {".py", ".ps1", ".js"}), ("scripts", {".py", ".ps1"})):
         for path in sorted((ROOT / folder).rglob("*")):
             if path.is_file() and path.suffix in extensions and "__pycache__" not in path.parts:
                 include(path)

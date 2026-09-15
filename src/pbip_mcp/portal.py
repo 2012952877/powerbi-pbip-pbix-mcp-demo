@@ -15,7 +15,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from starlette.applications import Starlette
 from starlette.datastructures import Headers, UploadFile
@@ -28,7 +28,7 @@ from .auth import PilotAuth, private_file
 from .config import Config
 from .errors import DemoError
 from .identity import current_principal, authenticated_principal
-from .inputs import DIRECTIONS, EXPORT_MODES, validate_input
+from .inputs import ARTIFACT_FILENAMES, DIRECTIONS, EXPORT_MODES, folder_source_name, validate_input
 from .storage import JobStore
 
 COOKIE = "pbip_session"
@@ -188,6 +188,12 @@ def create_portal(config: Config, auth_config: Path, *, origin: str = "http://12
                              "queue": store.queue_status(authenticated_principal()),
                              "limits": asdict(config.limits), "capabilities": capabilities()})
 
+    async def readiness_probe(request):
+        worker = await asyncio.to_thread(store.worker_status)
+        ready = worker["ready"] is True and worker["state"] in ("idle", "busy")
+        return JSONResponse({"ready": ready}, status_code=200 if ready else 503,
+                            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
     async def jobs(request):
         principal = authenticated_principal()
         if request.method == "GET":
@@ -203,6 +209,7 @@ def create_portal(config: Config, auth_config: Path, *, origin: str = "http://12
             if not isinstance(direction, str) or (mode is not None and not isinstance(mode, str)):
                 raise DemoError("INPUT_FIELDS", "Direction and export mode must be text.")
             single, folder = form.get("file"), form.getlist("project_files")
+            folder_paths = []
             if bool(single) == bool(folder):
                 raise DemoError("INPUT_FORMAT", "Upload exactly one file or one complete project folder.")
             if single:
@@ -217,6 +224,7 @@ def create_portal(config: Config, auth_config: Path, *, origin: str = "http://12
                         if not isinstance(upload, UploadFile):
                             raise DemoError("INPUT_FORMAT", "project_files must contain uploaded files.")
                         name = _member_name(upload.filename or "", config.limits)
+                        folder_paths.append(name)
                         if name.endswith(".pbix"):
                             raise DemoError("INPUT_FORMAT", "Folder uploads require a complete PBIP project.")
                         content = await upload.read(config.limits.member_bytes + 1)
@@ -226,8 +234,9 @@ def create_portal(config: Config, auth_config: Path, *, origin: str = "http://12
                         archive.writestr(name, content)
                 data, name = stream.getvalue(), "uploaded-project.zip"
             validated, direction = await asyncio.to_thread(validate_input, data, name, direction, mode, config.limits)
-            job = await asyncio.to_thread(store.submit, validated, principal=principal, source_name=name,
-                                          direction=direction, export_mode=mode)
+            source_name = folder_source_name(folder_paths, validated.project.pointer) if folder else name
+            job = await asyncio.to_thread(store.submit, validated, principal=principal, source_name=source_name,
+                                          direction=direction, export_mode=mode, source_is_folder=bool(folder))
         return JSONResponse({"ok": True, "job": job}, status_code=201)
 
     async def job(request):
@@ -252,9 +261,11 @@ def create_portal(config: Config, auth_config: Path, *, origin: str = "http://12
                 finally:
                     context.__exit__(None, None, None)
 
-        filename = {"pbix": "report.pbix", "pbip": "report.pbip.zip", "verification": "verification.json"}[kind]
+        filename = info["filename"]
+        fallback = filename if filename.isascii() else ARTIFACT_FILENAMES[kind]
+        disposition = f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
         return LeasedDownload(chunks(), media_type=info.get("media_type", "application/octet-stream"),
-                                 headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                                 headers={"Content-Disposition": disposition,
                                           "Content-Length": str(info["bytes"]), "Cache-Control": "no-store",
                                           "X-Content-Type-Options": "nosniff"})
 
@@ -294,6 +305,7 @@ def create_portal(config: Config, auth_config: Path, *, origin: str = "http://12
 
     app = Starlette(routes=[
         Route("/", index), Route("/api/session", session, methods=["GET", "POST", "DELETE"]),
+        Route("/readyz", readiness_probe),
         Route("/api/status", status), Route("/api/jobs", jobs, methods=["GET", "POST"]),
         Route("/api/jobs/{job_id}", job), Route("/api/jobs/{job_id}/cancel", job, methods=["POST"]),
         Route("/api/jobs/{job_id}/artifacts/{kind}", artifact),

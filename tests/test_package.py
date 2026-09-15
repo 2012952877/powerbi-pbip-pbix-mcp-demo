@@ -42,6 +42,8 @@ class PackageTests(unittest.TestCase):
                                     or record["path"] in {"pyproject.toml", "requirements.lock", "README.zh-CN.md"})
                     self.assertFalse({".venv", "__pycache__", "jobs", "runtime", "authdb", "build"} & set(path.parts))
                 self.assertIn("tests/worker_script_harness.ps1", package.namelist())
+                for name in ("test_portal_ui.py", "portal_ui_harness.js"):
+                    self.assertEqual(package.read("tests/" + name), (SOURCE / "tests" / name).read_bytes())
                 self.assertEqual(package.read("src/pbip_mcp/windows_desktop.py"),
                                  (SOURCE / "src" / "pbip_mcp" / "windows_desktop.py").read_bytes())
                 for name, content in fixture_files().items():

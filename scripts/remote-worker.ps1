@@ -9,6 +9,7 @@ param(
     [ValidatePattern('^[A-Za-z0-9_.-]+@(127\.0\.0\.1|localhost)$')][string]$Target = 'pbipdemo@127.0.0.1',
     [ValidateRange(0,60)][int]$ReviewSeconds = 0,
     [ValidateScript({ $_ -eq 0 -or ($_ -ge 60 -and $_ -le 7200) })][int]$IdleTimeout = 1800,
+    [ValidateSet('Manual','SessionAware')][string]$RecoveryMode = 'Manual',
     [ValidateRange(1,700)][int]$WaitSeconds = 30
 )
 $ErrorActionPreference='Stop'
@@ -19,7 +20,11 @@ $ReviewArgument = ''
 if ($PSBoundParameters.ContainsKey('ReviewSeconds')) { $ReviewArgument = " -ReviewSeconds $ReviewSeconds" }
 $IdleArgument = ''
 if ($PSBoundParameters.ContainsKey('IdleTimeout')) { $IdleArgument = " -IdleTimeout $IdleTimeout" }
-$Remote = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; & 'C:\PBIPMCP\app\scripts\manage-worker.ps1' -Action $Action$ReviewArgument$IdleArgument -WaitSeconds $WaitSeconds"
+$RecoveryArgument = ''
+if ($PSBoundParameters.ContainsKey('RecoveryMode')) {
+    $RecoveryArgument = if ($RecoveryMode -eq 'SessionAware') { ' -RecoveryMode SessionAware' } else { ' -RecoveryMode Manual' }
+}
+$Remote = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; & 'C:\PBIPMCP\app\scripts\manage-worker.ps1' -Action $Action$ReviewArgument$IdleArgument$RecoveryArgument -WaitSeconds $WaitSeconds"
 $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Remote))
 $Options = @(
     '-T', '-p', [string]$Port, '-i', [IO.Path]::GetFullPath($Identity),

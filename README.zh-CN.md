@@ -34,6 +34,8 @@ C:\PBIPMCP\app\scripts\start-portal.ps1 -Root C:\PBIPMCP -AuthConfig C:\PBIPMCP\
 | PBIX→PBIP，默认 definitions | `kind=pbip`，文件为 `report.pbip.zip` | 保留定义/资源，剔除缓存与本机设置；`contains_data=false`、`requires_data_reload=true`，可能需要人工加载数据 |
 | PBIX→PBIP，portable | 同样返回 PBIP ZIP | 仅保留本任务 Desktop 导出的非空缓存，缺缓存失败；新进程打开导出的缓存副本，无自动刷新 |
 
+部署命名适配版本后，新任务的文件上传保留原文件名，工程文件夹上传显示原文件夹名；下载采用同一名称主体，例如 `客户销售.zip` → `客户销售.pbix`，`客户销售.pbix` → `客户销售.pbip.zip`，转换记录为 `客户销售.verification.json`。文件夹名称逐字保留，包括其中的点号；没有共同外层文件夹的 API 上传使用 PBIP 入口名。回传 `客户销售.pbip.zip` 时会整体替换 `.pbip.zip` 后缀，不逐次堆叠扩展名。旧任务保留原显示名及 `report.pbix` / `report.pbip.zip` / `verification.json`，不猜测原名或改写历史。
+
 反向不是改扩展名：先校验有本地二进制模型的 PBIX 容器，真实 Desktop 打开、另存完整 PBIP、白名单打包、独立副本新 PID 复开，再交付。未知/加密/损坏容器受控拒绝；PBIP 不支持敏感度标签，遇 Desktop 限制失败，绝不移除标签或自动确认登录/法律/安全提示。`SecurityBindings` 本身不是标签证据，普通未标签 PBIX 也可能含此条目。
 
 rc7 只为 definitions 的复开关闭阶段允许最多两个不同的、已识别且属于当前任务进程的保存决定窗口；每个窗口仅响应一次已启用的 `Don't save` / `Do not save` / `Discard changes` 控件，仍受 25 秒关闭期限与整个转换期限约束。普通关闭路径仍最多一次，第三个或未知提示明确失败；这不是任意弹窗自动点击，也不会刷新或给 definitions 声称离线数据成功。
@@ -71,7 +73,7 @@ CLI 访问公网 MCP 同样需要显式 `--allow-public-https`：`pbip-client --
 
 需要摆脱本机 SSH 生命周期时，可用 `scripts\manage-public-portal.ps1 -Action Register -PublicOrigin https://<app>.azurewebsites.net -BindAddress <VM_PRIVATE_IP>` 注册唯一 `PBIPMCP-PublicPortal`，再显式 `-Action Start`。任务运行于既有 `pbipdemo` 的 Interactive+Limited 身份、该用户登录触发、最多三次间隔一分钟的失败重启，不存密码。现有凭证/数据 ACL 的校验绑定专用账户，所以不为 SYSTEM 运行放宽 ACL。此形态仍需该账户已登录；注销会失去运行前提，不能宣称独立于 Windows 登录的无人值守服务。公网 portal 不操作 GUI，worker 保持独立且只在 Active、解锁桌面执行；portal 在线时 worker 可以真实显示 offline/queue。
 
-`manage-public-portal.ps1 -Action Status` 只看具名任务和真实 portal 响应；`-Action Stop` 先停用具名任务以防登录/失败自动重启，再只停其自有 portal。再次启用必须管理员显式 `Enable-ScheduledTask -TaskName PBIPMCP-PublicPortal` 后 Start，不会覆盖停用意图。任务日志位于受 ACL 保护的 `pilot-auth-bidir\public-portal-runs`，不记录 HTTP 访问正文或凭证。不会新增 worker 自动启动守护。
+`manage-public-portal.ps1 -Action Status` 只看具名任务和真实 portal 响应；`-Action Stop` 先停用具名任务以防登录/失败自动重启，再只停其自有 portal。再次启用必须管理员显式 `Enable-ScheduledTask -TaskName PBIPMCP-PublicPortal` 后 Start，不会覆盖停用意图。任务日志位于受 ACL 保护的 `pilot-auth-bidir\public-portal-runs`，不记录 HTTP 访问正文或凭证。此 portal 管理器不会配置 worker 的恢复行为。
 
 公网管理的每次 Register/Start/Stop/Status 均需传入相同的 `-PublicOrigin` 和 `-BindAddress`。防火墙帮助脚本保持试点的 `/26` 专用网关子网契约；地址与子网都必须来自自己的批准环境，详细配置见[网关部署入口](deploy/public-gateway/README.md)。
 
@@ -82,6 +84,14 @@ CLI 访问公网 MCP 同样需要显式 `--allow-public-https`：`pbip-client --
 `GET /api/jobs` 列本人的最近 100 个任务。`POST /api/jobs` 接受单 `file`（`.pbix`/完整 `.zip`）或多个 `project_files`（filename 为含根目录的 webkitRelativePath），字段 `direction=auto|pbip_to_pbix|pbix_to_pbip`，仅反向接受 `export_mode=definitions|portable`。不能上传孤立 `.pbip` 或服务器路径。所有路径逐项验证，读取实际 body 时限制大小，不只相信 Content-Length。
 
 `GET /api/jobs/{id}` 返回 job；`POST /api/jobs/{id}/cancel` 只取消 queued；`GET /api/jobs/{id}/artifacts/{kind}` 授权 attachment 下载。job 包括 `job_id/status/direction/export_mode/source.name/created_at/error/artifacts`，以及 `phase/contains_data/requires_data_reload/warnings/artifact_status/retention_deadline`。status 为 queued/running/succeeded/failed/cancelled；产物过期单独标为 expired，不改写历史成功。没有伪造百分比或 ETA。
+
+网页在节点不可用时默认不允许直接提交；只有读到明确的不可用状态及有限排队期限，并由用户确认仍要排队，才保留原来的离线入队行为。节点状态未知、刷新失败或未取得有效期限时不能以此确认绕过。忙碌但 `ready=true` 的节点仍可正常排队。REST/MCP 的持久离线队列契约不变，这不是新增服务端访问控制。2026-09-14 已核对演示部署包含该更新；其他环境仍需安装对应版本，不能只凭源码推断服务端已升级。
+
+命名适配使用新任务的可空 `artifact_basename` 元数据；迁移只新增该列，旧任务为 null 并维持既有命名。`job.source.name`、`artifacts[].filename`、MCP `get_artifact` 的 `filename` 和 HTTP 下载头遵循同一命名规则。中文文件名使用 RFC 5987 `filename*=UTF-8''...`，并保留安全 ASCII 回退。名称若无法生成合法的 Windows 下载文件名，在入队前返回 `INPUT_NAME`，不静默截断。CLI 明确指定的 `--output` 路径不被服务器文件名覆盖。
+
+显示/下载名不参与服务端磁盘路径计算；内部仍使用任务独立目录和固定 `report.pbix` / `report.pbip.zip`，不重命名 PBIP ZIP 内的入口、模型、报表目录或引用。升级应停止自有 portal/worker 后安装；原部署可能使用不同的启动脚本参数，不能为命名适配顺带覆盖无关运维脚本或重注册任务。
+
+`worker.last_reported_state` 与 `worker.last_reported_message` 保存最后一次心跳报告，尚无 worker 时为 null；网页、MCP 和管理员状态共用这两个字段。心跳过期后，当前状态仍为 `stale`、`ready=false`，但不再丢失最后一次“会话断连/锁定”等原因。历史报告不证明当前桌面可用，也不能用它自动启动或解锁。`QUEUE_TIMEOUT` 表示领取前超时，不证明源文件损坏；应先恢复节点，再新建任务，不改写旧失败。
 
 ### 配额、留存与升级
 
@@ -314,9 +324,21 @@ $Manage = 'C:\PBIPMCP\app\scripts\manage-worker.ps1'
 
 `Doctor` 检查 Python、Desktop、UIA/原生控件依赖、磁盘和 worker 心跳，不启动 Desktop。**Doctor 的环境检查通过，不等于 worker 已就绪。** 从 SSH 调用时 `caller_session` 显示 Session 0 是正常诊断结果；转换可用性要看独立的 `worker.ready`。本机外部控制与 worker 仍然分处不同会话。
 
-新注册任务仍默认空闲 **30 分钟**退出，有限空闲模式的计划任务最长 **2 小时**。本次 rc7 部署已显式配置 `IdleTimeout=0`，对应计划任务 `ExecutionTimeLimit=PT0S`，不再受这两项退出期限影响；单次转换仍有 600 秒上限。无限空闲不是自动登录、解锁、守护或可用性承诺，RDP 仍需 Active 且未锁定。断连或锁定后先恢复桌面，再显式 Start；旧失败任务不会自动变成成功。
+新注册任务仍默认空闲 **30 分钟**退出，有限空闲模式的计划任务最长 **2 小时**。现有演示部署已显式配置 `IdleTimeout=0`，对应计划任务 `ExecutionTimeLimit=PT0S`，不再受这两项退出期限影响；单次转换仍有 600 秒上限。无限空闲本身不是会话恢复或可用性承诺，RDP 仍需 Active 且未锁定。`Manual` 模式断连退出后须先恢复桌面，再显式 Start；`SessionAware` 的等待与恢复行为见下节。旧失败任务都不会自动变成成功。
 
 已注册任务保留 `ReviewSeconds=20`：每个已验证的富样例页面停留 20 秒，仍受总超时监督。正常新注册任务默认 0；Start/Status 保留并显示既有 Review/Idle 参数，不偷偷修改。显式修改配置须先安全 Stop，确认任务 Ready、没有运行中的队列任务且 worker 不为 ready，再执行 `Configure -IdleTimeout 0`；不传 `ReviewSeconds` 就保留原值。日常 Start 不需要重复 Configure；停机流程见[运行手册](docs/02-日常复跑与运维.md)。
+
+### 可选会话恢复模式
+
+2026-09-14 已核对演示部署启用了 `SessionAware`，并实际观察到 `waiting_for_session` 状态。这里的“可选”表示新安装仍默认 `Manual`，不是线上尚未启用。额外的云端会话控制器仍未启用；本节只描述已部署的 Windows Worker 恢复机制。
+
+`worker --wait-for-session --idle-timeout 0` 增加本进程内的恢复等待，默认仍采用原有退出行为。仅当已处于非零交互会话、探测结果为 `RDP_SESSION_INACTIVE`、`DESKTOP_LOCKED` 或 `SESSION_PROBE_FAILED` 时等待；SYSTEM、Session 0、非 Windows、未知错误和安装路径错误仍受控退出。等待时每秒重新探测并发布 `ready=false`、`state=waiting_for_session`，不启动 Desktop、不领取任务，不把“进程还活着”当作“转换可用”。原始原因继续包含在最后心跳中，进入等待和恢复会写私有运行日志；没有外发邮件或 Teams 告警。
+
+桌面恢复 Active、未锁定且运行前提有效后，本进程继续领取新任务。等待期间排队期限仍被维护，超期任务仍为 `QUEUE_TIMEOUT`；转换途中断连的任务仍由原有限监督失败并清理自有进程，恢复后不重放。显式 `worker.stop` 在任何任务恢复和领取前检查；保持该标记时不会把旧 running 记录改为失败或启动新转换。已运行的转换仍按原 Stop 契约先结束，再退出，不因停止请求强杀。
+
+Windows 包装脚本的 `-RecoveryMode SessionAware` 将该参数接入现有具名任务，并配置同一普通用户的 AtLogOn 触发、三次失败重启（间隔一分钟）及无限任务执行期限；必须同时使用 `IdleTimeout=0`。`Manual` 为兼容默认，不因为装了新源码就偷偷修改现有任务。恢复不新增账号、服务平台或桌面会话；注销、VM 重启后仍需要获准的用户登录，锁屏仍需要正常解锁。通过 Task Scheduler 显式禁用的任务不会被 Start 擅自启用。
+
+部署此模式会改变 worker 的 action/settings/triggers，必须在单独批准的维护窗口备份后进行；不能沿用仅替换 runtime 两处文件时“任务定义完全未改动”的验收结论。原部署的 portal 脚本参数契约仍需保留。具体配置步骤与实际断连验收见运行手册；单元测试和脚本边界测试不等于无人值守可用性证据。
 
 在 **本机 PowerShell**，先按[运行手册第 6 节](docs/02-日常复跑与运维.md)建立隧道，再通过窄化 SSH 入口运行相同操作。下面示例统一使用 **50027**；改用其他空闲端口时同时更新隧道与客户端：
 

@@ -110,6 +110,7 @@ class JobStore:
                 "direction": "TEXT NOT NULL DEFAULT 'pbip_to_pbix'",
                 "export_mode": "TEXT",
                 "source_name": "TEXT NOT NULL DEFAULT 'source.zip'",
+                "artifact_basename": "TEXT",
                 "contains_data": "INTEGER",
                 "retention_seconds": "INTEGER",
                 "purged": "REAL",
@@ -190,14 +191,18 @@ class JobStore:
         self, archive: ValidatedArchive, expected_sha256: str | None = None, *,
         principal: Principal = LOCAL_OPERATOR, source_name: str = "source.zip",
         direction: str = "pbip_to_pbix", export_mode: str | None = None,
+        source_is_folder: bool = False,
     ) -> dict[str, Any]:
-        from .inputs import ValidatedPBIX, validate_direction, safe_source_name
+        from .inputs import ValidatedPBIX, validate_direction, safe_source_name, download_basename
 
         validate_direction(direction, export_mode)
+        if type(source_is_folder) is not bool or (source_is_folder and direction != "pbip_to_pbix"):
+            raise DemoError("INPUT_DIRECTION", "Folder uploads must contain a complete PBIP project.")
         if (direction == "pbix_to_pbip") != isinstance(archive, ValidatedPBIX):
             raise DemoError("INPUT_DIRECTION", "Input format does not match conversion direction.")
         export_mode = (export_mode or "definitions") if direction == "pbix_to_pbip" else None
         source_name = safe_source_name(source_name)
+        basename = download_basename(source_name, is_folder=source_is_folder)
         digest = hashlib.sha256(archive.data).hexdigest()
         if expected_sha256 is not None and (
             not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256)
@@ -270,11 +275,11 @@ class JobStore:
                 renamed = True
                 db.execute(
                     """INSERT INTO jobs(id,status,created,updated,expires,source_sha256,source_bytes,reserved_bytes,project_json,
-                    owner,storage_key,direction,export_mode,source_name,retention_seconds,phase)
-                    VALUES(?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,'queued')""",
+                    owner,storage_key,direction,export_mode,source_name,artifact_basename,retention_seconds,phase)
+                    VALUES(?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?,'queued')""",
                     (job_id, now, now, now + self.config.limits.queue_seconds, digest,
                      len(archive.data), reservation, json.dumps(project.as_dict()), principal.id,
-                     principal.storage_key, direction, export_mode, source_name, self.config.limits.retention_seconds),
+                     principal.storage_key, direction, export_mode, source_name, basename, self.config.limits.retention_seconds),
                 )
             committed = True
         finally:
@@ -283,6 +288,18 @@ class JobStore:
             if renamed and not committed:
                 remove_task_tree(directory, owner_dir)
         return self.get(job_id, principal=principal)
+
+    @staticmethod
+    def _artifact_info(row: sqlite3.Row, artifact: dict[str, Any]) -> dict[str, Any]:
+        from .inputs import ARTIFACT_FILENAMES, artifact_filename
+
+        kind = artifact["kind"]
+        if kind not in ARTIFACT_FILENAMES:
+            raise DemoError("INVALID_ARTIFACT", "The stored artifact has an unknown kind.")
+        # Public names never become private worker paths; legacy jobs retain their original names.
+        filename = (artifact_filename(row["artifact_basename"], kind)
+                    if row["artifact_basename"] is not None else ARTIFACT_FILENAMES[kind])
+        return {**artifact, "filename": filename}
 
     def get(self, job_id: str, *, principal: Principal = LOCAL_OPERATOR) -> dict[str, Any]:
         with self._connect() as db:
@@ -322,7 +339,7 @@ class JobStore:
                     if row["error_code"] else None
                 ),
                 "artifacts": [
-                    {**item, "status": "expired" if row["purged"] else "available"}
+                    {**self._artifact_info(row, item), "status": "expired" if row["purged"] else "available"}
                     for item in (json.loads(row["artifact_json"]) if row["artifact_json"] else [])
                 ],
             }
@@ -440,7 +457,11 @@ class JobStore:
         with self._connect() as db:
             row = db.execute("SELECT * FROM worker WHERE singleton=1").fetchone()
         if row is None:
-            return {"ready": False, "state": "absent", "code": "NO_INTERACTIVE_WORKER", "message": "No interactive worker has started."}
+            return {
+                "ready": False, "state": "absent", "code": "NO_INTERACTIVE_WORKER",
+                "message": "No interactive worker has started.",
+                "last_reported_state": None, "last_reported_message": None,
+            }
         fresh = time.time() - row["updated"] <= self.config.limits.heartbeat_seconds
         return {
             "ready": fresh and bool(row["ready"]),
@@ -449,10 +470,14 @@ class JobStore:
             "message": row["reason"] if fresh else "Worker heartbeat expired; controller cannot assert Desktop readiness.",
             "updated_at": utc(row["updated"]),
             "session_id": row["session_id"],
+            "last_reported_state": row["state"],
+            "last_reported_message": row["reason"],
         }
 
     @contextmanager
     def artifact_file(self, job_id: str, kind: str, *, principal: Principal = LOCAL_OPERATOR, verify_hash: bool = True):
+        from .inputs import ARTIFACT_FILENAMES
+
         if kind not in ("pbix", "pbip", "verification"):
             raise DemoError("INVALID_ARTIFACT", "Artifact kind must be pbix, pbip or verification.")
         token = uuid.uuid4().hex
@@ -466,10 +491,11 @@ class JobStore:
             artifact = next((item for item in json.loads(row["artifact_json"]) if item["kind"] == kind), None)
             if artifact is None:
                 raise DemoError("ARTIFACT_NOT_FOUND", "This job has no artifact of the requested kind.")
+            artifact = self._artifact_info(row, artifact)
             # A live file handle plus a renewable persisted lease protects active downloads.
             db.execute("INSERT INTO downloads VALUES(?,?,?)", (token, job_id, time.time() + 300))
         try:
-            filename = {"pbix": "report.pbix", "pbip": "report.pbip.zip", "verification": "verification.json"}[kind]
+            filename = ARTIFACT_FILENAMES[kind]
             path = self.job_dir(job_id) / "output" / filename
             reject_links(path)
             if not path.is_file() or path.stat().st_size != artifact["bytes"]:
@@ -583,7 +609,8 @@ class JobStore:
                 if not read_complete and download_id is not None:
                     self.finish_artifact_download(job_id, kind, download_id, principal=principal)
         return {
-            "job_id": job_id, "kind": kind, "offset": offset, "next_offset": offset + len(data),
+            "job_id": job_id, "kind": kind, "filename": artifact["filename"],
+            "offset": offset, "next_offset": offset + len(data),
             "eof": offset + len(data) == artifact["bytes"], "sha256": artifact["sha256"],
             "total_bytes": artifact["bytes"], "data_base64": base64.b64encode(data).decode("ascii"),
         }

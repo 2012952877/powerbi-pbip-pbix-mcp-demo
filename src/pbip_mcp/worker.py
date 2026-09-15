@@ -19,6 +19,7 @@ from .storage import JobStore, atomic_json, file_sha256
 from .safe_paths import remove_task_tree, tree_files
 
 LOG = logging.getLogger(__name__)
+_RECOVERABLE_SESSION_CODES = frozenset({"RDP_SESSION_INACTIVE", "DESKTOP_LOCKED", "SESSION_PROBE_FAILED"})
 
 
 class QueueLock(AbstractContextManager):
@@ -97,9 +98,9 @@ class Worker:
         self.store = JobStore(config)
         self.review_seconds = review_seconds
 
-    def _heartbeat(self, state: dict[str, Any], *, busy: bool = False) -> None:
+    def _heartbeat(self, state: dict[str, Any], *, busy: bool = False, waiting: bool = False) -> None:
         self.store.heartbeat(
-            state="busy" if busy else ("idle" if state["ready"] else "blocked"),
+            state="waiting_for_session" if waiting else ("busy" if busy else ("idle" if state["ready"] else "blocked")),
             ready=state["ready"], reason=state["message"], session_id=state.get("session_id"),
         )
 
@@ -299,26 +300,57 @@ class Worker:
                 except (OSError, DemoError):
                     LOG.exception("Task %s temporary cleanup requires operator attention", claim["job_id"])
 
-    def run(self, *, max_jobs: int = 0, idle_timeout: int = 0) -> int:
+    def run(self, *, max_jobs: int = 0, idle_timeout: int = 0, wait_for_session: bool = False) -> int:
         if idle_timeout != 0 and not 60 <= idle_timeout <= 7200:
             raise DemoError("WORKER_IDLE_TIMEOUT", "idle-timeout must be 0 (no idle exit) or 60..7200 seconds.")
+        if type(wait_for_session) is not bool or (wait_for_session and idle_timeout != 0):
+            raise DemoError("WORKER_RECOVERY_CONFIG", "Session recovery requires wait-for-session and idle-timeout 0.")
+        stop_file = self.config.data_dir / "worker.stop"
         with QueueLock(self.config.data_dir):
-            recovered = self.store.recover_interrupted()
-            if recovered:
-                LOG.warning("Marked %s interrupted jobs as failed; originals retained.", recovered)
             count = 0
             idle_since = time.monotonic()
             state = {"ready": False, "message": "Worker exited before readiness was established.", "session_id": None}
+            stop_requested = False
+            waiting_for = None
             try:
+                if stop_file.exists():
+                    stop_requested = True
+                    LOG.info("Explicit stop remains active; no jobs were recovered or claimed.")
+                    return 0
+                recovered = self.store.recover_interrupted()
+                if recovered:
+                    LOG.warning("Marked %s interrupted jobs as failed; originals retained.", recovered)
                 while max_jobs == 0 or count < max_jobs:
-                    if (self.config.data_dir / "worker.stop").exists():
+                    if stop_file.exists():
+                        stop_requested = True
                         LOG.info("Graceful stop requested; queued originals remain available.")
                         return 0
                     state = readiness(self.desktop_exe)
-                    self._heartbeat(state)
+                    session_id = state.get("session_id")
+                    waiting = (wait_for_session and not state["ready"]
+                               and state.get("code") in _RECOVERABLE_SESSION_CODES
+                               and type(session_id) is int and session_id > 0)
+                    self._heartbeat(state, waiting=waiting)
                     if not state["ready"]:
+                        if waiting:
+                            reason = (state["code"], session_id)
+                            if waiting_for != reason:
+                                LOG.warning("Worker waiting for its interactive session: %s; no jobs will be claimed.",
+                                            state["code"])
+                                waiting_for = reason
+                            # Keep existing queue deadlines enforceable without attempting Desktop work.
+                            self.store.queue_status()
+                            time.sleep(1)
+                            continue
                         LOG.error("Worker not ready: %s", state["code"])
                         return 2
+                    if waiting_for is not None:
+                        LOG.info("Interactive session recovered; accepting new queued work without replaying failed jobs.")
+                        waiting_for = None
+                    if stop_file.exists():
+                        stop_requested = True
+                        LOG.info("Graceful stop requested before the next queue claim.")
+                        return 0
                     claim = self.store.claim()
                     if claim:
                         self.execute(claim)
@@ -330,9 +362,10 @@ class Worker:
                         time.sleep(1)
                 return 0
             finally:
+                stopped = stop_requested or bool(state["ready"])
                 self.store.heartbeat(
-                    state="stopped" if state["ready"] else "blocked", ready=False,
-                    reason="Interactive worker stopped." if state["ready"] else state["message"],
+                    state="stopped" if stopped else "blocked", ready=False,
+                    reason="Interactive worker stopped." if stopped else state["message"],
                     session_id=state.get("session_id"),
                 )
 
@@ -344,6 +377,8 @@ def main() -> None:
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--max-jobs", type=int, default=0)
     parser.add_argument("--idle-timeout", type=int, default=0, help="0 disables idle exit; otherwise 60..7200 seconds.")
+    parser.add_argument("--wait-for-session", action="store_true",
+                        help="Pause on a disconnected/locked user desktop and resume only when it is ready; requires idle-timeout 0.")
     parser.add_argument("--review-seconds", type=int, default=0)
     parser.add_argument("--limits-config", type=Path)
     args = parser.parse_args()
@@ -351,6 +386,8 @@ def main() -> None:
         parser.error("max-jobs cannot be negative")
     if args.idle_timeout != 0 and not 60 <= args.idle_timeout <= 7200:
         parser.error("idle-timeout must be 0 (no idle exit) or 60..7200 seconds")
+    if args.wait_for_session and args.idle_timeout != 0:
+        parser.error("wait-for-session requires idle-timeout 0")
     if not 0 <= args.review_seconds <= 60:
         parser.error("review-seconds must be 0..60")
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(message)s")
@@ -360,7 +397,7 @@ def main() -> None:
         raise SystemExit(0 if state["ready"] else 2)
     try:
         worker = Worker(Config.load(args.data_dir.resolve(), args.limits_config), args.desktop_exe.resolve(), review_seconds=args.review_seconds)
-        code = worker.run(max_jobs=args.max_jobs, idle_timeout=args.idle_timeout)
+        code = worker.run(max_jobs=args.max_jobs, idle_timeout=args.idle_timeout, wait_for_session=args.wait_for_session)
     except DemoError as exc:
         print(json.dumps({"ok": False, "error": exc.as_dict()}), file=sys.stderr)
         code = 2

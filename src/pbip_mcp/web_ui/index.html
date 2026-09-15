@@ -106,7 +106,7 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
     label, legend { font-weight: 600; }
     input[type="password"], select { width: 100%; min-height: 44px; margin-top: 8px; padding: 8px 12px; background: var(--cp-surface); color: var(--cp-text); border: 1px solid var(--cp-border-strong); border-radius: .625rem; }
     input::placeholder { color: var(--cp-text-muted); opacity: 1; }
-    input[type="radio"] { width: 18px; height: 18px; margin: 3px 0 0; accent-color: var(--cp-accent); flex-shrink: 0; }
+    input[type="radio"], input[type="checkbox"] { width: 18px; height: 18px; margin: 3px 0 0; accent-color: var(--cp-accent); flex-shrink: 0; }
     fieldset { padding: 0; margin: 24px 0 0; border: 0; min-width: 0; }
     legend { padding: 0; margin-bottom: 8px; }
     .servicebar { display: flex; justify-content: space-between; align-items: start; gap: 16px; margin-bottom: 24px; }
@@ -116,7 +116,7 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
     .worker[data-state="ready"]::before { background: var(--cp-success); }
     .worker[data-state="busy"]::before { background: var(--cp-warning); }
     .worker[data-state="offline"]::before { background: var(--cp-danger); }
-    #worker-help { margin-top: 4px; max-width: 75ch; }
+    #worker-help, #worker-history { margin-top: 4px; max-width: 75ch; overflow-wrap: anywhere; }
     .workspace { display: grid; grid-template-columns: minmax(340px, 420px) minmax(0, 1fr); gap: 28px; align-items: start; }
     .upload-panel { padding: 24px; border: 1px solid var(--cp-border); border-radius: 16px; background: var(--cp-surface); }
     .section-intro { margin: 4px 0 20px; }
@@ -133,6 +133,7 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
     .radio-option strong { display: block; font-weight: 600; }
     .data-note { margin-top: 8px; }
     .submit-row { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--cp-border); }
+    #offline-queue { margin-bottom: 16px; }
     #submit-job { width: 100%; }
     #submit-help { margin-top: 8px; }
     .notice { padding: 12px 16px; border: 1px solid var(--cp-border-strong); border-radius: .625rem; background: var(--cp-surface); overflow-wrap: anywhere; }
@@ -224,6 +225,7 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
             <span class="hint" id="queue-summary"></span>
           </div>
           <p id="worker-help" class="hint"></p>
+          <div id="worker-history" class="hint" hidden></div>
         </div>
         <span class="hint" id="last-updated"></span>
       </div>
@@ -278,6 +280,13 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
               <div class="detail-body" id="upload-diagnostic-body"></div>
             </details>
             <div class="submit-row">
+              <div class="notice" id="offline-queue" data-tone="warning" hidden>
+                <p class="hint" id="offline-queue-help"></p>
+                <label class="radio-option">
+                  <input type="checkbox" id="acknowledge-offline-queue" autocomplete="off" aria-describedby="offline-queue-help">
+                  <span>我已知晓节点当前无法转换、排队有截止时间且可能失败，仍要创建排队任务。</span>
+                </label>
+              </div>
               <button class="primary" id="submit-job" type="submit" disabled>提交转换</button>
               <p class="hint" id="submit-help">登录后仅可查看和下载自己的任务。</p>
               <p class="hint" id="upload-limit"></p>
@@ -303,9 +312,32 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
       const directions = { pbix_to_pbip: "PBIX → PBIP工程", pbip_to_pbix: "PBIP工程 → PBIX" };
       const states = { queued: "排队", running: "处理中", succeeded: "完成", failed: "失败", cancelled: "已取消" };
       const artifactLabels = { pbix: "下载 PBIX", pbip: "下载 PBIP 工程 ZIP", verification: "转换检查记录" };
+      const workerMessageTranslations = new Map([
+        ["Conversion requires an interactive Windows worker.", "转换需要运行在交互式 Windows 桌面中的节点。"],
+        ["Run the worker as a normal user, not SYSTEM.", "请使用普通用户而不是 SYSTEM 账户运行节点。"],
+        ["Session 0 cannot run Desktop conversion.", "Windows 会话 0 不能运行 Desktop 转换。"],
+        ["Keep the worker's RDP session connected and active.", "请保持节点的 RDP 会话连接且处于活动状态。"],
+        ["Unlock the worker's interactive Default desktop.", "请解锁节点的交互式 Default 桌面。"],
+        ["Start the worker on the user's interactive desktop.", "请从该用户的交互式桌面启动节点。"],
+        ["The worker has an active, unlocked interactive Windows session.", "当时节点具有活动且未锁定的 Windows 交互式会话。"],
+        ["Windows could not verify an active, unlocked user desktop.", "当时无法确认 Windows 用户桌面处于活动且未锁定状态。"],
+        ["Configure the installed standard x64 PBIDesktop.exe path.", "请配置已安装的标准 x64 Power BI Desktop（PBIDesktop.exe）路径。"],
+        ["Interactive worker stopped.", "交互式转换节点当时已停止。"],
+        ["No interactive worker has started.", "尚无交互式转换节点启动记录。"],
+        ["Worker heartbeat expired; controller cannot assert Desktop readiness.", "节点心跳已过期，控制服务无法确认 Desktop 就绪状态。"]
+      ]);
+      const warningTranslations = new Map([
+        ["Shared Windows workers are not a sandbox for untrusted M queries or separate customer security domains.",
+          "共享 Windows 转换节点不是运行不可信 M 查询的安全沙箱，也不提供不同客户安全域之间的隔离。"],
+        ["Model definitions may contain embedded data, sensitive text and connection information; none is automatically redacted.",
+          "模型定义可能包含内嵌数据、敏感文本和连接信息；这些内容均不会自动脱敏。"],
+        ["Definitions export omits the data cache; loading data again may be necessary. No automatic refresh is performed.",
+          "仅导出定义时不包含数据缓存，可能需要重新加载数据；服务不会自动刷新数据。"]
+      ]);
       const state = {
         user: null, csrf: "", epoch: 0, controllers: new Set(), timer: null,
-        refreshing: false, failures: 0, status: null, statusFresh: false,
+        refreshing: false, failures: 0, status: null, statusFresh: false, statusVersion: 0,
+        workerAcknowledgementKey: null,
         files: [], folder: false, uploading: false, uncertain: false, uncertainChecked: false,
         jobs: new Map(), jobsVersion: 0, cancelling: new Set(), loginBusy: false
       };
@@ -330,7 +362,7 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
       function formatDate(value) {
         const date = new Date(value);
         return value && !Number.isNaN(date.getTime()) ? new Intl.DateTimeFormat("zh-CN", {
-          month: "2-digit", day: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false
+          month: "2-digit", day: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
         }).format(date) : "时间暂不可用";
       }
       function errorText(error, fallback) {
@@ -338,12 +370,18 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
         if (error.code === "TIMEOUT") return "服务响应超时，请稍后重试。";
         if (error.code === "AUTH_RATE") return "登录尝试过于频繁，请等待一分钟后重试。";
         if (error.code === "WORKER_PATH_LENGTH") return "节点工作目录过长，无法接收此工程。请联系管理员缩短工作目录后重试。";
+        if (error.code === "INPUT_NAME") return "文件或工程名称无法安全用作下载文件名。请缩短名称，避免非法字符和 Windows 保留名称后重新提交。";
         if (error.code === "JOB_ALREADY_RUNNING") return "任务已被节点领取，无法取消。请刷新查看最新状态。";
-        if (["PORTABLE_CACHE_MISSING", "DATA_CACHE_REQUIRED"].includes(error.code)) return "缺少所需的数据缓存。请查看诊断信息并重新加载数据，不能保证此工程直接离线转回。";
+        if (error.code === "DATA_CACHE_REQUIRED") return "该 PBIP 工程缺少非空的数据缓存，当前不能离线转成 PBIX。请仅在工程可信且具备数据源权限时，在 Power BI Desktop 中手动加载数据并保存工程；重新打包完整工程时须包含模型目录下的 .pbi\\cache.abf，再创建新任务。服务不会自动刷新数据。";
+        if (error.code === "PORTABLE_CACHE_MISSING") return "Power BI Desktop 未导出非空的任务专属数据缓存，无法提供可离线转回的完整工程。请联系管理员检查源 PBIX 的连接模式、数据是否已加载及 Desktop 导出情况，确认后创建新任务。若仅需编辑定义，可改选“可编辑工程（不含数据缓存）”，但不保证直接离线转回 PBIX；服务不会自动刷新数据。";
         if (error.code === "PBIX_INVALID") return "文件不是有效的 PBIX。请先确认它能在 Power BI Desktop 中打开，再重新选择。";
         if (error.code === "PBIX_UNSUPPORTED") return "当前服务不支持此 PBIX 格式或连接模式。请查看诊断信息并联系管理员。";
         if (error.code === "PBIX_LABEL_UNSUPPORTED") return "当前服务不支持此 PBIX 的保护或标签类型，请联系管理员确认可处理的格式。";
         if (error.code === "EXPORT_SIZE") return "导出结果超过服务限制，请联系管理员调整限制后重试。";
+        if (error.code === "WORKER_TIMEOUT") return "任务运行已超时，且转换节点心跳已过期。请联系管理员检查节点与 Power BI Desktop 状态，确认恢复后创建新任务；不能据此认定源文件损坏。";
+        if (error.code === "INTERACTIVE_SESSION_LOST") return "转换期间 Windows 交互式桌面会话已断开或锁定。请联系管理员恢复并保持会话连接、解锁，确认节点就绪后创建新任务。";
+        if (error.code === "WORKER_INTERNAL_ERROR") return "转换节点发生内部错误。请联系管理员检查节点的私有日志并排查故障，确认恢复后创建新任务。";
+        if (error.code === "DESKTOP_UNEXPECTED_SAVE_PROMPT") return "Power BI Desktop 出现意外的保存确认，自动转换已停止。请联系管理员检查提示并确认安全处理方式，处理后再创建新任务，不要反复提交。";
         if (error.status === 413) return "文件超出服务允许的大小，请减小文件或联系管理员调整限制。";
         if (error.status === 429) return "当前排队任务已达上限。请等待已有任务结束后再提交。";
         if (error.status === 403) return "会话权限或安全校验未通过。请退出后重新登录；仍失败时联系管理员。";
@@ -389,6 +427,7 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
         state.csrf = "";
         state.status = null;
         state.statusFresh = false;
+        state.workerAcknowledgementKey = null;
         state.refreshing = false;
         state.uploading = false;
         state.uncertain = false;
@@ -402,6 +441,7 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
         $("app").hidden = true;
         $("account").hidden = true;
         $("user-name").textContent = "";
+        renderWorkerHistory({});
         $("boot").hidden = true;
         $("login").hidden = false;
         $("access-token").value = "";
@@ -420,6 +460,10 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
         state.user = result.user;
         state.csrf = result.csrf_token;
         state.failures = 0;
+        state.status = null;
+        state.statusFresh = false;
+        state.workerAcknowledgementKey = null;
+        resetOfflineAcknowledgement();
         $("user-name").textContent = result.user.display_name || result.user.id;
         $("login").hidden = true;
         $("boot").hidden = true;
@@ -431,8 +475,10 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
         $("worker-state").textContent = "正在读取节点状态";
         $("worker-state").dataset.state = "unknown";
         $("worker-help").textContent = "";
+        renderWorkerHistory({});
         $("queue-summary").textContent = "";
         $("last-updated").textContent = "";
+        updateForm();
         $("pick-file").focus();
         refresh();
       }
@@ -450,6 +496,39 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
         return !state.folder && state.files[0].name.toLowerCase().endsWith(".pbix") ? "pbix_to_pbip" : "pbip_to_pbix";
       }
       function effectiveDirection() { return $("direction").value === "auto" ? inferredDirection() : $("direction").value; }
+      function resetOfflineAcknowledgement() { $("acknowledge-offline-queue").checked = false; }
+      function queueSeconds() {
+        const seconds = state.status?.limits?.queue_seconds;
+        return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+      }
+      function workerAvailability() {
+        if (!state.statusFresh || !navigator.onLine) return "unknown";
+        const worker = state.status?.worker;
+        if (worker?.ready === false) return "unavailable";
+        if (worker?.ready === true && ["idle", "ready", "busy"].includes(worker.state)) {
+          return worker.state === "busy" ? "busy" : "ready";
+        }
+        return "unknown";
+      }
+      function workerSubmissionError() {
+        if (!navigator.onLine) return "网络已断开，请恢复连接并刷新节点状态后再提交。";
+        if (!state.statusFresh) return "当前无法确认节点状态，请重试连接；暂不能创建排队任务。";
+        const availability = workerAvailability();
+        if (availability === "unknown") return "节点就绪信息缺失或异常，无法确认能否转换。请刷新状态或联系管理员；暂不能提交。";
+        if (availability !== "unavailable") return "";
+        if (!queueSeconds()) return "节点未就绪，且服务未提供有效的排队时限。请联系管理员；暂不能提交。";
+        return $("acknowledge-offline-queue").checked ? "" : "节点未就绪，当前无法转换。仅在了解排队时限与失败风险并勾选确认后，才可创建排队任务。";
+      }
+      function invalidateStatus() {
+        state.statusFresh = false;
+        state.statusVersion++;
+        state.workerAcknowledgementKey = null;
+        resetOfflineAcknowledgement();
+        $("worker-state").textContent = "节点状态未更新";
+        $("worker-state").dataset.state = "unknown";
+        $("worker-help").textContent = "当前无法确认节点状态，请重试连接。暂不能创建排队任务；仍可查看已有任务。";
+        updateForm();
+      }
       function validateSelection() {
         if (!state.files.length) return "请先选择一个 PBIX 文件或完整的 PBIP 工程。";
         if (state.folder && state.status?.capabilities?.folder_upload !== true) return "当前服务不支持文件夹上传，请将完整工程打包为 ZIP 后选择文件。";
@@ -490,19 +569,28 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
           : ".pbix 转成 PBIP 工程；工程 .zip 转成 .pbix。";
         $("pick-folder").hidden = state.status?.capabilities?.folder_upload !== true || !("webkitdirectory" in $("folder-input"));
         for (const id of ["pick-file", "pick-folder", "clear-file", "direction"]) $(id).disabled = state.uploading;
-        const blocked = !state.user || state.uploading || state.uncertain || !state.statusFresh || !navigator.onLine || Boolean(validateSelection());
+        const offlineQueue = workerAvailability() === "unavailable" && queueSeconds() !== null;
+        $("offline-queue").hidden = !state.user || !offlineQueue;
+        $("acknowledge-offline-queue").disabled = !offlineQueue || state.uploading || state.uncertain;
+        $("offline-queue-help").textContent = offlineQueue
+          ? "当前节点未就绪，无法进行转换。新任务最多排队 " + queueSeconds() + " 秒（从服务端创建任务起计算），具体截止时间见任务详情。需由管理员恢复节点，并由节点在截止前领取任务，否则将超时失败；不保证恢复或转换成功。"
+          : "";
+        const workerError = workerSubmissionError();
+        const blocked = !state.user || state.uploading || state.uncertain || Boolean(workerError) || Boolean(validateSelection());
         $("submit-job").disabled = blocked;
         if ($("confirm-resubmit")) $("confirm-resubmit").disabled = !state.uncertainChecked || !state.statusFresh;
-        $("submit-job").textContent = state.uploading ? "正在上传并创建任务…" : "提交转换";
+        $("submit-job").textContent = state.uploading ? "正在确认状态并提交…" : offlineQueue ? "创建排队任务" : "提交转换";
         $("upload-form").setAttribute("aria-busy", String(state.uploading));
         $("submit-help").textContent = state.uncertain ? "提交结果尚未确认。请先刷新“我的任务”，避免重复提交。"
-          : state.uploading ? "服务确认接收后，任务才会显示在列表中。请勿关闭此页面。"
-          : !state.statusFresh ? "先连接服务并读取上传限制，再提交转换。"
+          : state.uploading ? "正在确认节点状态；服务确认接收后，任务才会显示在列表中。请勿关闭此页面。"
+          : workerError ? workerError
+          : offlineQueue ? "仅创建有时限的排队任务，当前无法开始转换。请联系管理员恢复节点。"
           : "任务按队列处理；提交后可在右侧或下方查看结果。";
         const max = state.status?.limits?.archive_bytes;
         $("upload-limit").textContent = Number.isFinite(max) ? "上传大小上限：" + formatBytes(max) : "";
       }
       function clearSelection() {
+        resetOfflineAcknowledgement();
         state.files = [];
         state.folder = false;
         $("file-input").value = "";
@@ -549,17 +637,27 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
         $("sync-notice").hidden = !message;
       }
       function renderStatus(result) {
+        const worker = result.worker || {};
+        const acknowledgementKey = JSON.stringify([worker.ready, worker.state, worker.code, result.limits?.queue_seconds]);
+        if (acknowledgementKey !== state.workerAcknowledgementKey) resetOfflineAcknowledgement();
+        state.workerAcknowledgementKey = acknowledgementKey;
         state.status = result;
         state.statusFresh = true;
-        const worker = result.worker || {};
-        const workerState = worker.state === "busy" ? "busy"
-          : ["ready", "idle"].includes(worker.state) && worker.ready === true ? "ready"
-          : ["offline", "absent", "stale", "stopped"].includes(worker.state) ? "offline" : "unknown";
-        $("worker-state").dataset.state = workerState;
-        $("worker-state").textContent = { ready: "转换节点可用", busy: "转换节点忙碌", offline: "转换节点离线", unknown: "节点暂不可用" }[workerState];
-        $("worker-help").textContent = workerState === "offline" ? "任务可先排队，节点恢复后处理；如持续离线，请联系管理员。"
-          : workerState === "busy" ? "节点正在处理任务，新任务会依次排队。"
-          : workerState === "unknown" ? "请刷新状态；持续不可用时请联系管理员。" : "";
+        const availability = workerAvailability();
+        const unavailableLabels = { stale: "转换节点心跳已过期", blocked: "转换节点受阻", absent: "转换节点未启动",
+          offline: "转换节点离线", stopped: "转换节点已停止", waiting_for_session: "转换节点已暂停，等待桌面恢复" };
+        $("worker-state").dataset.state = availability === "unavailable" ? "offline" : availability;
+        $("worker-state").textContent = availability === "unavailable"
+          ? (Object.hasOwn(unavailableLabels, worker.state) ? unavailableLabels[worker.state] : "转换节点未就绪")
+          : { ready: "转换节点可用", busy: "转换节点忙碌（可接收排队任务）", unknown: "节点就绪状态未知或异常" }[availability];
+        $("worker-help").textContent = availability === "unavailable" && worker.state === "waiting_for_session"
+          ? "工作进程仍在检测桌面状态，当前不能转换。专用桌面恢复连接且解锁后会自动接单；不会自动登录或解锁，也不会重跑旧失败任务。已有排队截止时间仍有效，持续受阻请联系管理员。"
+          : availability === "unavailable"
+          ? "当前无法开始转换，请联系管理员恢复节点。只有明确确认排队时限和失败风险后才可创建排队任务；已有任务仍可查看，排队任务可取消，可用结果可下载。"
+          : availability === "busy" ? "节点已就绪，正在处理任务；新任务可在排队截止前等待领取。"
+          : availability === "unknown" ? "无法确认节点是否就绪，请刷新状态或联系管理员；暂不能提交。"
+          : "节点已就绪，可提交转换。";
+        renderWorkerHistory(worker);
         const queue = result.queue || {};
         const parts = [];
         if (Number.isInteger(queue.mine_pending)) parts.push("我的排队任务 " + queue.mine_pending + " 个");
@@ -567,6 +665,21 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
         if (Number.isInteger(queue.running)) parts.push("处理中 " + queue.running + " 个");
         $("queue-summary").textContent = parts.join(" · ");
         updateForm();
+      }
+      function renderWorkerHistory(worker) {
+        const history = $("worker-history");
+        history.replaceChildren();
+        const reportedState = typeof worker.last_reported_state === "string" ? worker.last_reported_state : "";
+        const reportedMessage = typeof worker.last_reported_message === "string" ? worker.last_reported_message : "";
+        history.hidden = !worker.updated_at && !reportedState && !reportedMessage;
+        if (history.hidden) return;
+        history.append(textNode("p", "", "上次心跳记录（仅供排查，不代表当前就绪）"));
+        addDetail(history, "上次心跳时间", formatDate(worker.updated_at));
+        const labels = { ready: "就绪（ready）", idle: "空闲（idle）", busy: "忙碌（busy）", blocked: "受阻（blocked）",
+          stopped: "已停止（stopped）", offline: "离线（offline）", absent: "未启动（absent）", stale: "心跳过期（stale）",
+          waiting_for_session: "等待桌面恢复（waiting_for_session）" };
+        addDetail(history, "上次上报状态", Object.hasOwn(labels, reportedState) ? labels[reportedState] : reportedState);
+        addDetail(history, "上次上报诊断", workerMessageTranslations.get(reportedMessage) || reportedMessage);
       }
       function textNode(tag, className, text) {
         const element = document.createElement(tag);
@@ -581,11 +694,22 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
         body.append(line);
       }
       function jobMessage(job) {
+        if (job.status === "failed") {
+          if (job.error?.code === "QUEUE_TIMEOUT") {
+            const explanation = job.started_at
+              ? "服务记录为排队超时，但同时存在开始时间，无法确认 Power BI Desktop 是否已开始转换；请管理员核对记录。"
+              : "排队已超时：截止时间前没有转换节点领取任务，Power BI Desktop 转换尚未开始。";
+            return explanation + (job.queue_deadline ? "排队截止：" + formatDate(job.queue_deadline) + "。" : "")
+              + "不能据此认定源文件损坏。请联系管理员恢复节点后创建新任务；此失败任务不会自动转为成功。";
+          }
+          return errorText(job.error || {}, "转换未完成。请展开任务详情查看错误代码与诊断，联系管理员核对原因后再创建新任务。");
+        }
+        if (job.status === "cancelled") return "任务已取消，未继续转换。" + (job.artifact_status === "expired" ? "任务文件已过期。" : "");
         if (job.artifact_status === "expired") return "结果已过期。请重新选择源文件提交转换。";
-        if (job.status === "queued") return Number.isInteger(job.queue_position) ? "正在排队 · 队列位置 " + job.queue_position : "等待转换节点领取任务。";
+        if (job.status === "queued") return (Number.isInteger(job.queue_position) ? "正在排队 · 队列位置 " + job.queue_position + "。" : "等待转换节点领取任务。")
+          + (job.queue_deadline ? "排队截止：" + formatDate(job.queue_deadline) + "。" : "排队截止时间暂不可用，请刷新或联系管理员核对；排队并非无限等待。")
+          + "需要可用节点在截止前领取，否则将超时失败；节点未就绪时请联系管理员恢复。";
         if (job.status === "running") return job.phase ? "当前阶段：" + job.phase : "转换节点正在处理，请等待状态更新。";
-        if (job.status === "failed") return "转换未完成。展开详情查看原因；修正源文件或联系管理员后重新提交。";
-        if (job.status === "cancelled") return "任务已取消，未继续转换。";
         if (job.requires_data_reload) return "工程需要重新加载数据。使用结果前请查看任务详情。";
         if (job.status === "succeeded" && job.artifact_status === "pending") return "转换已完成，正在等待结果可下载。";
         return "";
@@ -595,8 +719,9 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
         row.dataset.jobId = job.job_id;
         const top = textNode("div", "job-top");
         top.append(textNode("h3", "job-title", job.source?.name || "源文件"));
-        const badge = textNode("span", "badge", job.artifact_status === "expired" ? "结果过期" : states[job.status] || "未知状态");
-        badge.dataset.status = job.artifact_status === "expired" ? "expired" : job.status;
+        const expiredLabel = job.status === "succeeded" ? "结果过期" : (states[job.status] || "未知状态") + " · 任务文件过期";
+        const badge = textNode("span", "badge", job.artifact_status === "expired" ? expiredLabel : states[job.status] || "未知状态");
+        badge.dataset.status = job.artifact_status === "expired" && job.status === "succeeded" ? "expired" : job.status;
         top.append(badge);
         row.append(top);
         const meta = textNode("div", "job-meta");
@@ -622,7 +747,7 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
           if (!Object.hasOwn(artifactLabels, artifact.kind) || artifact.status !== "available" || job.artifact_status === "expired") continue;
           const link = textNode("a", artifact.kind === "verification" ? "secondary-link" : "button download", artifactLabels[artifact.kind]);
           link.href = "/api/jobs/" + encodeURIComponent(job.job_id) + "/artifacts/" + artifact.kind;
-          link.setAttribute("download", "");
+          link.setAttribute("download", typeof artifact.filename === "string" ? artifact.filename : "");
           link.addEventListener("click", (event) => {
             if (!navigator.onLine) {
               event.preventDefault();
@@ -638,19 +763,33 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
         details.append(textNode("summary", "", "任务详情"));
         const body = textNode("div", "detail-body");
         addDetail(body, "任务 ID", job.job_id, true);
-        addDetail(body, "服务端阶段", job.phase);
+        addDetail(body, job.status === "failed" ? "失败任务的最后记录阶段" : job.status === "cancelled" ? "取消前最后记录阶段" : "服务端阶段",
+          job.phase === "queued" ? "排队（queued）" : job.phase);
+        addDetail(body, "创建时间", formatDate(job.created_at));
+        if (job.queue_deadline) addDetail(body, "排队截止时间", formatDate(job.queue_deadline));
+        addDetail(body, "开始时间", job.started_at ? formatDate(job.started_at) : "未记录");
+        if (job.updated_at) addDetail(body, "最后更新时间", formatDate(job.updated_at));
+        if (job.finished_at) addDetail(body, "结束时间", formatDate(job.finished_at));
         addDetail(body, "错误代码", job.error?.code, true);
-        addDetail(body, "诊断提示", job.error?.message);
-        if (job.contains_data === true) addDetail(body, "数据说明", "此结果包含报表数据，请按你的数据使用权限保管。");
-        if (job.contains_data === false) addDetail(body, "数据说明", "此结果不包含报表数据缓存。");
-        if (job.requires_data_reload) addDetail(body, "数据加载", "需要重新加载数据，不能保证此工程直接离线转回 PBIX。");
-        for (const warning of Array.isArray(job.warnings) ? job.warnings : []) if (typeof warning === "string") body.append(textNode("p", "", warning));
-        if (job.retention_deadline) addDetail(body, "结果保留至", formatDate(job.retention_deadline));
+        addDetail(body, "服务端原始诊断", job.error?.message);
+        if (job.retention_deadline) addDetail(body, job.status === "succeeded" ? "结果保留至" : "任务文件保留至", formatDate(job.retention_deadline));
         for (const artifact of Array.isArray(job.artifacts) ? job.artifacts : []) {
           if (Object.hasOwn(artifactLabels, artifact.kind)) addDetail(body, "产物", (artifact.filename || artifact.kind) + " · " + formatBytes(artifact.bytes) + (artifact.status === "expired" ? " · 已过期" : ""));
         }
         details.append(body);
         row.append(details);
+        const safetyBody = textNode("div", "detail-body");
+        if (job.contains_data === true) addDetail(safetyBody, "数据说明", "此结果包含报表数据，请按你的数据使用权限保管。");
+        if (job.contains_data === false) addDetail(safetyBody, "数据说明", "此结果不包含报表数据缓存，不代表已脱敏。");
+        if (job.requires_data_reload) addDetail(safetyBody, "数据加载", "定义导出不包含数据缓存，可能需要重新加载数据，不能保证工程直接离线转回 PBIX。");
+        for (const warning of Array.isArray(job.warnings) ? job.warnings : []) {
+          if (typeof warning === "string") safetyBody.append(textNode("p", "", warningTranslations.get(warning) || warning));
+        }
+        if (safetyBody.childElementCount) {
+          const safety = textNode("details", "job-safety");
+          safety.append(textNode("summary", "", "安全与数据说明（非错误原因）"), safetyBody);
+          row.append(safety);
+        }
         return row;
       }
       function renderJobs(jobs) {
@@ -667,11 +806,13 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
             const replacement = buildJob(job);
             replacement.dataset.signature = signature;
             if (row) {
-              replacement.querySelector("details").open = row.querySelector("details").open;
+              Array.from(replacement.querySelectorAll("details")).forEach((detail, detailIndex) => {
+                detail.open = row.querySelectorAll("details")[detailIndex]?.open || false;
+              });
               const focused = row.contains(document.activeElement) ? document.activeElement : null;
               row.replaceWith(replacement);
               if (focused) {
-                const target = focused.tagName === "SUMMARY" ? replacement.querySelector("summary")
+                const target = focused.tagName === "SUMMARY" ? replacement.querySelectorAll("summary")[Array.from(row.querySelectorAll("summary")).indexOf(focused)]
                   : focused.tagName === "A" ? Array.from(replacement.querySelectorAll("a")).find((link) => link.href === focused.href)
                   : replacement.querySelector('button[data-action="cancel"]');
                 (target || replacement.querySelector("summary")).focus({ preventScroll: true });
@@ -699,12 +840,12 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
         clearTimeout(state.timer);
         if (!navigator.onLine) {
           syncNotice("网络已断开。恢复连接后可重试；已提交的任务不受页面断线影响。");
-          state.statusFresh = false;
-          updateForm();
+          invalidateStatus();
           return;
         }
         const epoch = state.epoch;
         const jobsVersion = state.jobsVersion;
+        const statusVersion = ++state.statusVersion;
         state.refreshing = true;
         $("refresh-jobs").disabled = true;
         $("retry-sync").disabled = true;
@@ -716,12 +857,9 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
           failed = result.reason;
         }
         try {
-          if (results[0].status === "fulfilled") renderStatus(results[0].value);
-          else {
-            state.statusFresh = false;
-            $("worker-state").textContent = "节点状态未更新";
-            $("worker-state").dataset.state = "unknown";
-            $("worker-help").textContent = "当前无法确认节点状态，请重试连接。";
+          if (statusVersion === state.statusVersion) {
+            if (results[0].status === "fulfilled") renderStatus(results[0].value);
+            else invalidateStatus();
           }
           // A list requested before a mutation must not overwrite its newer result.
           if (results[1].status === "fulfilled") {
@@ -820,8 +958,9 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
       $("file-input").addEventListener("change", (event) => selectFiles(Array.from(event.target.files)));
       $("folder-input").addEventListener("change", (event) => selectFiles(Array.from(event.target.files), true));
       $("clear-file").addEventListener("click", () => { clearSelection(); notice("upload-message", ""); $("pick-file").focus(); });
-      $("direction").addEventListener("change", updateForm);
-      $("export-options").addEventListener("change", updateForm);
+      $("direction").addEventListener("change", () => { resetOfflineAcknowledgement(); updateForm(); });
+      $("export-options").addEventListener("change", () => { resetOfflineAcknowledgement(); updateForm(); });
+      $("acknowledge-offline-queue").addEventListener("change", updateForm);
       for (const eventName of ["dragenter", "dragover"]) $("dropzone").addEventListener(eventName, (event) => {
         event.preventDefault();
         if (!state.uploading) $("dropzone").dataset.drag = "true";
@@ -843,19 +982,41 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
       window.addEventListener("drop", (event) => event.preventDefault());
       $("upload-form").addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (!state.user || state.uploading || state.uncertain || !state.statusFresh) return;
-        const validation = validateSelection();
+        if (!state.user || state.uploading || state.uncertain) return;
+        const validation = workerSubmissionError() || validateSelection();
         if (validation) { notice("upload-message", validation); return; }
         const epoch = state.epoch;
+        const statusVersion = ++state.statusVersion;
+        // Periodic polling must not supersede a slow submit-time status check.
+        clearTimeout(state.timer);
+        state.timer = null;
         state.uploading = true;
         notice("upload-message", "");
         updateForm();
-        const body = new FormData();
-        if (state.folder) for (const file of state.files) body.append("project_files", file, file.webkitRelativePath);
-        else body.append("file", state.files[0], state.files[0].name);
-        body.append("direction", $("direction").value);
-        if (effectiveDirection() === "pbix_to_pbip") body.append("export_mode", document.querySelector('input[name="export-mode"]:checked').value);
+        let postStarted = false;
         try {
+          let latestStatus;
+          try { latestStatus = await api("/api/status"); }
+          catch (error) {
+            if (epoch === state.epoch && statusVersion === state.statusVersion) invalidateStatus();
+            throw error;
+          }
+          if (epoch !== state.epoch) return;
+          if (statusVersion !== state.statusVersion) {
+            notice("upload-message", "节点状态正在更新，请确认最新状态后再次提交。", "warning");
+            return;
+          }
+          renderStatus(latestStatus);
+          const revalidation = workerSubmissionError() || validateSelection();
+          if (revalidation) { notice("upload-message", revalidation); return; }
+          const body = new FormData();
+          if (state.folder) for (const file of state.files) body.append("project_files", file, file.webkitRelativePath);
+          else body.append("file", state.files[0], state.files[0].name);
+          body.append("direction", $("direction").value);
+          if (effectiveDirection() === "pbix_to_pbip") body.append("export_mode", document.querySelector('input[name="export-mode"]:checked').value);
+          postStarted = true;
+          resetOfflineAcknowledgement();
+          scheduleRefresh();
           const result = await api("/api/jobs", { method: "POST", headers: csrfHeaders(), body, timeout: 600000 });
           if (epoch !== state.epoch) return;
           if (!result.job || typeof result.job.job_id !== "string") throw new ApiError("服务已响应，但未返回任务。请刷新任务列表确认是否已提交。", "INVALID_JOB");
@@ -867,10 +1028,11 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
           announce("任务已创建。");
         } catch (error) {
           if (handleSessionError(error, epoch)) return;
-          const ambiguous = ["NETWORK_ERROR", "TIMEOUT", "INVALID_RESPONSE", "INVALID_JOB"].includes(error.code) || error.status >= 500;
+          const ambiguous = postStarted && (["NETWORK_ERROR", "TIMEOUT", "INVALID_RESPONSE", "INVALID_JOB"].includes(error.code) || error.status >= 500);
           state.uncertain = ambiguous;
           state.uncertainChecked = false;
-          notice("upload-message", ambiguous ? "尚未确认任务是否创建。请先刷新“我的任务”核对，避免重复提交。" : errorText(error, "上传失败，请重试。"), ambiguous ? "warning" : "error");
+          notice("upload-message", ambiguous ? "尚未确认任务是否创建。请先刷新“我的任务”核对，避免重复提交。"
+            : postStarted ? errorText(error, "上传失败，请重试。") : "提交前未能确认节点状态，尚未上传或创建任务。请重试连接。", ambiguous ? "warning" : "error");
           $("upload-diagnostic-body").replaceChildren();
           addDetail($("upload-diagnostic-body"), "错误代码", error.code, true);
           addDetail($("upload-diagnostic-body"), "服务端诊断", error.message);
@@ -894,6 +1056,7 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
           if (!state.uncertainChecked || !state.statusFresh) return;
           state.uncertain = false;
           state.uncertainChecked = false;
+          resetOfflineAcknowledgement();
           button.remove();
           notice("upload-message", "请确认任务列表中没有刚才的提交，再点击“提交转换”。", "warning");
           updateForm();
@@ -913,7 +1076,7 @@ FORM: Brief-pinned Operate split workspace, stacked on narrow screens. No random
       });
       window.addEventListener("offline", () => {
         clearTimeout(state.timer);
-        state.statusFresh = false;
+        invalidateStatus();
         if (state.user) syncNotice("网络已断开。恢复连接后可重试；已提交的任务不受页面断线影响。");
         updateForm();
       });

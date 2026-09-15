@@ -187,6 +187,44 @@ class StoreTests(unittest.TestCase):
         state = self.store.worker_status()
         self.assertFalse(state["ready"])
         self.assertEqual(state["state"], "stale")
+        self.assertEqual(state["last_reported_state"], "idle")
+        self.assertEqual(state["last_reported_message"], "Unit test heartbeat, not Desktop evidence.")
+        self.assertIn("expired", state["message"])
+
+    def test_missing_worker_has_no_invented_last_report(self):
+        state = self.store.worker_status()
+        self.assertFalse(state["ready"])
+        self.assertEqual(state["state"], "absent")
+        self.assertIsNone(state["last_reported_state"])
+        self.assertIsNone(state["last_reported_message"])
+
+    def test_stale_worker_preserves_last_blocker_without_rewriting_heartbeat(self):
+        reason = "Keep the worker's RDP session connected and active."
+        self.store.heartbeat(state="blocked", ready=False, reason=reason, session_id=2)
+        with self.store._connect() as db:
+            db.execute("UPDATE worker SET updated=?", (time.time() - 60,))
+            before = tuple(db.execute("SELECT * FROM worker").fetchone())
+        state = JobStore(self.config).worker_status()
+        self.assertFalse(state["ready"])
+        self.assertEqual(state["state"], "stale")
+        self.assertEqual(state["code"], "WORKER_NOT_READY")
+        self.assertEqual(state["last_reported_state"], "blocked")
+        self.assertEqual(state["last_reported_message"], reason)
+        self.assertIn("expired", state["message"])
+        self.assertNotIn("pid", state)
+        with self.store._connect() as db:
+            self.assertEqual(tuple(db.execute("SELECT * FROM worker").fetchone()), before)
+
+    def test_fresh_busy_and_blocked_reports_remain_distinct(self):
+        for ready in (True, False):
+            with self.subTest(ready=ready):
+                self.store.heartbeat(state="busy", ready=ready, reason="UNIT busy report", session_id=2)
+                state = self.store.worker_status()
+                self.assertEqual(state["ready"], ready)
+                self.assertEqual(state["state"], "busy")
+                self.assertEqual(state["last_reported_state"], "busy")
+                self.assertEqual(state["last_reported_message"], "UNIT busy report")
+                self.assertEqual(state["code"], None if ready else "WORKER_NOT_READY")
 
     def test_artifact_protocol_ranges_and_hash(self):
         job = self.store.submit(self.archive)

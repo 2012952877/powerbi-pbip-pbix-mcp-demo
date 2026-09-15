@@ -13,6 +13,7 @@ PBIP 的文本定义适合编辑、代码审阅与版本管理；PBIX 适合 Des
 | 双向转换 | 完整 PBIP 文件夹 / ZIP → PBIX；带本地模型的 PBIX → PBIP ZIP |
 | definitions / portable | 默认仅定义、不带缓存；可选携带本任务缓存以离线打开或回转 |
 | 网页与 MCP | 个人登录、上传、我的任务、排队取消、成品及 verification 下载 |
+| 保留原名称 | 新任务标题和下载文件名沿用上传文件或工程文件夹名称，旧任务不改写 |
 | 多用户 owner 授权 | 网页与 HTTP MCP 共用身份、队列和产物，服务端逐次检查归属 |
 | 公网网关 | Azure App Service HTTPS → VNet → Windows 私网 portal |
 | 合成示例 | 销售合计 60；多页、中文、关系与加权合计 200 |
@@ -35,7 +36,9 @@ Browser / HTTP MCP
                               PBIX / PBIP ZIP + verification
 ```
 
-管理员另用 Bastion / SSH 维护环境；普通用户不领取 SSH 密钥。portal 与 worker 分别启停：网页可达不等于桌面就绪。本次 rc7 部署已将 worker 配置为 `IdleTimeout=0`、计划任务 `ExecutionTimeLimit=PT0S`，保留 `ReviewSeconds=20`；不再因空闲 30 分钟或任务运行两小时而退出，但仍必须保持 RDP **Active 且未锁定**，不会自动登录、解锁或守护重启。
+管理员另用 Bastion / SSH 维护环境；普通用户不领取 SSH 密钥。portal 与 worker 分别启停：网页可达不等于桌面就绪。2026-09-14 部署核对时，worker 使用 `IdleTimeout=0`、计划任务 `ExecutionTimeLimit=PT0S`，保留 `ReviewSeconds=20`；不再因空闲 30 分钟或任务运行两小时而退出，但执行转换仍必须保持 RDP **Active 且未锁定**。
+
+同日确认线上已启用 **`RecoveryMode=SessionAware` 会话恢复模式**：短暂断连/锁定时保留真实心跳、暂停接单，桌面恢复后处理尚未过期的排队任务；计划任务为同一用户配置登录触发及最多三次、一分钟间隔的失败重启。显式 Stop 会留下持久停机标记，只有管理员 Start 可清除。新安装仍默认 `Manual`，必须由管理员显式启用恢复模式。它不创建或解锁 Windows 会话，不重新执行失败任务，也不能在无人登录的 VM 重启后保证转换可用。额外的云端会话控制器未启用，不属于本次可交付运行链路；配置与验收边界见[日常运维](docs/02-日常复跑与运维.md)。
 
 ## 在线演示
 
@@ -45,7 +48,7 @@ Browser / HTTP MCP
 
 ## 快速开始
 
-开发环境：Windows、Python 3.12 x64；网关测试另需 Node.js 22+。真实转换还需标准版 Power BI Desktop、Visual C++ x64 运行库、英文 Desktop UI，以及保持连接且解锁的专用普通用户桌面。先由有权人员处理首次启动、格式选项和法律 / 安全提示。
+开发环境：Windows、Python 3.12 x64；网页 JavaScript 行为及网关测试另需 Node.js 22+。真实转换还需标准版 Power BI Desktop、Visual C++ x64 运行库、英文 Desktop UI，以及保持连接且解锁的专用普通用户桌面。先由有权人员处理首次启动、格式选项和法律 / 安全提示。
 
 在仓库根目录 PowerShell 安装并运行本地测试（不会触发真实转换）：
 
@@ -80,6 +83,6 @@ definitions 导出仍经过真实 Save As、剔除缓存与本机设置、独立
 
 ## 状态与许可证
 
-源码基于固定 rc7 / **0.2.4**，公开副本保留将私有部署参数改为显式输入的处理；既有合成结果不重写。样例观察不代表任意模型语义等价或生产级无人值守承诺。
+源码以 rc7 / **0.2.4** 为基线，新增原名称保留、网页故障诊断与可选会话恢复；本次同步不改写已有版本号或历史合成结果，具体源码修订以 Git 提交为准。公开副本保留将私有部署参数改为显式输入的处理。样例观察不代表任意模型语义等价或生产级无人值守承诺。
 
 **未附加许可证，使用前请联系维护者。** Public 可见不等于已授予开源许可证。

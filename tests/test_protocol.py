@@ -65,6 +65,58 @@ class MCPProtocolTests(unittest.IsolatedAsyncioTestCase):
             result = await client.call_tool("run_shell", {"command": "not executed"})
             self.assertTrue(result.is_error)
 
+    async def test_status_preserves_last_worker_report_after_heartbeat_expires(self):
+        store = JobStore(self.config)
+        reason = "Keep the worker's RDP session connected and active."
+        store.heartbeat(state="blocked", ready=False, reason=reason, session_id=2)
+        with store._connect() as db:
+            db.execute("UPDATE worker SET updated=?", (time.time() - 60,))
+        async with Client(self.server, raise_exceptions=True) as client:
+            health = await call(client, "converter_status")
+        worker = health["worker"]
+        self.assertFalse(worker["ready"])
+        self.assertEqual(worker["state"], "stale")
+        self.assertEqual(worker["last_reported_state"], "blocked")
+        self.assertEqual(worker["last_reported_message"], reason)
+        self.assertIn("expired", worker["message"])
+        self.assertNotIn("pid", worker)
+
+    async def test_customer_names_match_mcp_metadata_and_preserve_explicit_client_output(self):
+        store = JobStore(self.config)
+        async with Client(self.server, raise_exceptions=True, cache=None) as client:
+            response = await call(client, "submit_pbix", {
+                "pbix_base64": base64.b64encode(input_pbix()).decode(),
+                "source_name": "客户 报表.v2.pbix", "export_mode": "portable",
+            })
+            job = response["job"]
+            self.assertEqual(job["source"]["name"], "客户 报表.v2.pbix")
+            claim = store.claim()
+            output = store.job_dir(job["job_id"]) / "output"
+            output.mkdir()
+            payload = b"UNIT PROTOCOL ONLY; NOT A REAL PBIP ZIP"
+            (output / "report.pbip.zip").write_bytes(payload)
+            store.finish(job["job_id"], claim["lease"], artifacts=[{
+                "kind": "pbip", "filename": "report.pbip.zip", "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }])
+            result = await call(client, "get_job", {"job_id": job["job_id"]})
+            self.assertEqual(result["job"]["artifacts"][0]["filename"], "客户 报表.v2.pbip.zip")
+            resource = await client.read_resource(f"pbip://jobs/{job['job_id']}")
+            self.assertEqual(json.loads(resource.contents[0].text)["job"]["artifacts"][0]["filename"],
+                             "客户 报表.v2.pbip.zip")
+            transfer = (await call(client, "begin_artifact_download", {"job_id": job["job_id"], "kind": "pbip"}))["download"]
+            try:
+                chunk = await call(client, "get_artifact", {"job_id": job["job_id"], "kind": "pbip",
+                    "download_id": transfer["download_id"]})
+                self.assertEqual(chunk["artifact"]["filename"], "客户 报表.v2.pbip.zip")
+            finally:
+                await call(client, "finish_artifact_download", {"job_id": job["job_id"], "kind": "pbip",
+                    "download_id": transfer["download_id"]})
+            chosen = self.config.data_dir / "explicit-user-choice.zip"
+            result = await download(client, job["job_id"], chosen, "pbip")
+            self.assertEqual(result["file"], str(chosen.resolve()))
+            self.assertEqual(chosen.read_bytes(), payload)
+
     async def test_actual_stdio_sdk_transport(self):
         async with Client(transport(self.config.data_dir, None), read_timeout_seconds=20) as client:
             self.assertEqual(client.server_info.name, "PBIP Desktop converter")

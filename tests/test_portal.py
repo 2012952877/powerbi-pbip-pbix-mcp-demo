@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import unquote
 
 from starlette.testclient import TestClient
 
@@ -101,6 +102,65 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         self.assertEqual(len(JobStore(self.config).list_jobs(principal=Principal("alice", "Alice"))), 2)
 
+    def test_status_retains_stale_worker_diagnostics_without_asserting_readiness(self):
+        self.assertEqual(self.client.get("/api/status").status_code, 401)
+        self.login()
+        store = JobStore(self.config)
+        reason = "Keep the worker's RDP session connected and active."
+        store.heartbeat(state="blocked", ready=False, reason=reason, session_id=2)
+        with store._connect() as db:
+            db.execute("UPDATE worker SET updated=?", (time.time() - 60,))
+        response = self.client.get("/api/status")
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["worker"]
+        self.assertFalse(state["ready"])
+        self.assertEqual(state["state"], "stale")
+        self.assertEqual(state["last_reported_state"], "blocked")
+        self.assertEqual(state["last_reported_message"], reason)
+        self.assertIn("expired", state["message"])
+        self.assertNotIn("pid", state)
+        self.assertIsNone(response.json()["queue"]["pending"])
+
+    def test_anonymous_readiness_probe_exposes_only_current_conversion_boolean(self):
+        store = JobStore(self.config)
+        response = self.client.get("/readyz")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"ready": False})
+        for state, ready, expected in (("idle", True, True), ("busy", True, True),
+                                        ("waiting_for_session", False, False), ("busy", False, False),
+                                        ("stopped", False, False), ("blocked", False, False)):
+            with self.subTest(state=state, ready=ready):
+                store.heartbeat(state=state, ready=ready, reason="PRIVATE operational reason", session_id=2)
+                response = self.client.get("/readyz")
+                self.assertEqual(response.status_code, 200 if expected else 503)
+                self.assertEqual(response.json(), {"ready": expected})
+                self.assertEqual(response.headers["cache-control"], "no-store")
+                self.assertNotIn("PRIVATE", response.text)
+                self.assertNotIn("set-cookie", response.headers)
+        store.heartbeat(state="idle", ready=True, reason="PRIVATE", session_id=2)
+        with store._connect() as db:
+            db.execute("UPDATE worker SET updated=?", (time.time() - 60,))
+        self.assertEqual(self.client.get("/readyz").json(), {"ready": False})
+        self.assertEqual(self.client.get("/api/status").status_code, 401)
+        self.assertEqual(self.client.get("/api/jobs").status_code, 401)
+        # The root MCP mount may handle a method mismatch as an unknown route.
+        self.assertIn(self.client.post("/readyz").status_code, (404, 405))
+        self.assertEqual(self.client.get("/readyz", headers={"Host": "unapproved.example"}).status_code, 403)
+        self.assertEqual(self.client.get("/readyz", headers={"Origin": "https://unapproved.example"}).status_code, 403)
+
+    def test_readiness_probe_never_expires_jobs_or_writes_a_worker_heartbeat(self):
+        headers = self.login()
+        job = self.submit(headers).json()["job"]
+        store = JobStore(self.config)
+        with store._connect() as db:
+            db.execute("UPDATE jobs SET expires=0 WHERE id=?", (job["job_id"],))
+            before = tuple(db.execute("SELECT * FROM jobs WHERE id=?", (job["job_id"],)).fetchone())
+        response = self.client.get("/readyz")
+        self.assertEqual(response.status_code, 503)
+        with store._connect() as db:
+            self.assertEqual(tuple(db.execute("SELECT * FROM jobs WHERE id=?", (job["job_id"],)).fetchone()), before)
+            self.assertEqual(db.execute("SELECT count(*) FROM worker").fetchone()[0], 0)
+
     def test_zip_and_folder_cache_preflight_reject_without_creating_a_job(self):
         headers = self.login()
         store = JobStore(self.config)
@@ -175,7 +235,7 @@ class PortalTests(unittest.TestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, data)
-        self.assertIn('attachment; filename="report.pbix"', response.headers["content-disposition"])
+        self.assertIn('attachment; filename="project.pbix"', response.headers["content-disposition"])
         with store._connect() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM downloads").fetchone()[0], 0)
             db.execute("UPDATE jobs SET finished=0 WHERE id=?", (job["job_id"],))
@@ -183,3 +243,64 @@ class PortalTests(unittest.TestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 410)
         self.assertEqual(response.json()["error"]["code"], "ARTIFACT_EXPIRED")
+
+    def test_original_names_reach_titles_artifacts_and_unicode_download_headers(self):
+        headers = self.login()
+        store = JobStore(self.config)
+        cases = (
+            ("客户 报表.v2.zip", "zip", "客户 报表.v2"),
+            ("Customer.Q1'100%.ZIP", "zip", "Customer.Q1'100%"),
+            ("客户 工程.v2.zip", "folder", "客户 工程.v2.zip"),
+            ("rootless", "rootless", "Synthetic"),
+            ("客户 报表.PBIX", "definitions", "客户 报表"),
+            ("Customer.v2.pbix", "portable", "Customer.v2"),
+        )
+        for name, mode, base in cases:
+            with self.subTest(name=name, mode=mode):
+                if mode in ("folder", "rootless"):
+                    prefix = name + "/" if mode == "folder" else ""
+                    submitted = self.client.post("/api/jobs", headers=headers,
+                        files=[("project_files", (prefix + path, value)) for path, value in fixture_files().items()],
+                        data={"direction": "pbip_to_pbix"})
+                elif mode == "zip":
+                    submitted = self.submit(headers, name=name)
+                else:
+                    submitted = self.submit(headers, name=name, data=input_pbix(), mode=mode)
+                self.assertEqual(submitted.status_code, 201, submitted.text)
+                job = submitted.json()["job"]
+                self.assertEqual(job["source"]["name"], "Synthetic" if mode == "rootless" else name)
+                claim = store.claim()
+                self.assertEqual(claim["job_id"], job["job_id"])
+                output = store.job_dir(job["job_id"]) / "output"
+                output.mkdir()
+                main = ("pbip", "report.pbip.zip", ".pbip.zip") if mode in ("definitions", "portable") \
+                    else ("pbix", "report.pbix", ".pbix")
+                artifacts = []
+                for kind, internal, _ in (main, ("verification", "verification.json", ".verification.json")):
+                    payload = ("UNIT NAMING ONLY " + kind).encode()
+                    (output / internal).write_bytes(payload)
+                    artifacts.append({"kind": kind, "filename": internal, "bytes": len(payload),
+                                      "sha256": hashlib.sha256(payload).hexdigest()})
+                store.finish(job["job_id"], claim["lease"], artifacts=artifacts)
+                result = self.client.get("/api/jobs/" + job["job_id"]).json()["job"]
+                for kind, internal, suffix in (main, ("verification", "verification.json", ".verification.json")):
+                    expected = base + suffix
+                    metadata = next(item for item in result["artifacts"] if item["kind"] == kind)
+                    self.assertEqual(metadata["filename"], expected)
+                    response = self.client.get(f"/api/jobs/{job['job_id']}/artifacts/{kind}")
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.content, (output / internal).read_bytes())
+                    disposition = response.headers["content-disposition"]
+                    disposition.encode("ascii")
+                    self.assertEqual(unquote(disposition.split("filename*=UTF-8''", 1)[1]), expected)
+                    fallback = expected if expected.isascii() else internal
+                    self.assertTrue(disposition.startswith(f'attachment; filename="{fallback}";'))
+                with store._connect() as db:
+                    self.assertEqual(db.execute("SELECT count(*) FROM downloads").fetchone()[0], 0)
+
+    def test_unsafe_download_name_is_rejected_before_queue_creation(self):
+        headers = self.login()
+        response = self.submit(headers, name="NUL.zip")
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["error"]["code"], "INPUT_NAME")
+        self.assertEqual(self.client.get("/api/jobs").json()["jobs"], [])
